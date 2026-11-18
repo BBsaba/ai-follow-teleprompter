@@ -13,6 +13,11 @@ on:
 jobs:
   test:
     runs-on: windows-latest
+    # 英文 runner 的默认 stdout 编码是 cp1252，而测试脚本会打印中文。
+    # 不设这两个变量，一 print 就 UnicodeEncodeError，5 个文件全红。
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
     strategy:
       fail-fast: false
       matrix:

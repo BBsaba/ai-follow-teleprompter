@@ -29,6 +29,12 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 PY = sys.executable
 
+# 子进程强制 UTF-8。测试脚本会 print 中文，而英文 Windows 的默认 stdout 编码是
+# cp1252，一打中文就 UnicodeEncodeError——GitHub Actions 的 windows runner 正是
+# 这种情况，实测 5 个文件全红。run_all 自己的 reconfigure 管不到子进程，
+# 所以必须在这里显式传下去。
+_CHILD_ENV = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+
 # 回环绝不该走代理：本机常全局设 HTTP_PROXY，会让 websocket 连 127.0.0.1 也 502
 os.environ["NO_PROXY"] = "127.0.0.1,localhost," + os.environ.get("NO_PROXY", "")
 os.environ["no_proxy"] = os.environ["NO_PROXY"]
@@ -105,7 +111,7 @@ def main(argv=None) -> int:
         print(f"\n{'=' * 60}\n  {name}\n{'=' * 60}", flush=True)
         r = subprocess.run([PY, str(HERE / name)], cwd=str(ROOT),
                            capture_output=True, text=True, encoding="utf-8",
-                           errors="replace")
+                           errors="replace", env=_CHILD_ENV)
         out = (r.stdout or "") + (r.stderr or "")
         # 只回显失败的断言行，通过的太吵
         for line in out.splitlines():
