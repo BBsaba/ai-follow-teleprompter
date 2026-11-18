@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>提词器 · 设置</title>
+<link rel="stylesheet" href="/static/settings.css">
+</head>
+<body>
+  <header>
+    <span class="brand">提词器 <em>设置</em></span>
+    <span class="spacer"></span>
+    <a class="link" href="/console">← 返回控制台</a>
+    <button id="btnSave" class="primary">保存</button>
+  </header>
+
+  <p id="busyBar" class="banner" hidden>
+    麦克风正在使用中，设置已锁定。先回控制台停止识别再来改。
+  </p>
+
+  <main>
+    <!-- ---------- 麦克风 ---------- -->
+    <section class="card">
+      <div class="card-head">
+        <h2>麦克风</h2>
+        <span id="micChip" class="chip">系统默认</span>
+      </div>
+      <p class="hint">
+        选错了最常见的症状是「界面在听，但一个字都没识别到」——
+        因为程序正在听一块没有声音的输入。选好之后点「试一下」，对着说话看电平跳不跳。
+      </p>
+
+      <div class="field">
+        <label for="micSel">输入设备</label>
+        <select id="micSel"></select>
+        <button id="btnMicRefresh" class="ghost" title="重新读取设备列表">刷新</button>
+      </div>
+
+      <div class="field">
+        <span class="label">试音</span>
+        <button id="btnMicTest" class="ghost">试一下（1.2 秒）</button>
+      </div>
+      <div class="vu-row">
+        <span class="vu-label">电平</span>
+        <div class="vu"><i id="micVu"></i></div>
+      </div>
+      <p id="micTestMsg" class="msg"></p>
+    </section>
+
+    <!-- ---------- 语音模型 ---------- -->
+    <section class="card">
+      <div class="card-head">
+        <h2>语音模型</h2>
+        <span id="modelChip" class="chip">自动</span>
+      </div>
+      <p class="hint">
+        默认「自动」：程序在 <code>models/</code> 里按内容找，文件夹叫什么都行。
+        想同时放好几个模型换着用，就在这里指定。
+      </p>
+
+      <div class="field">
+        <label for="modelSel">用哪个</label>
+        <select id="modelSel"></select>
+        <button id="btnModelScan" class="ghost" title="重新扫描 models/">重新扫描</button>
+      </div>
+
+      <div class="field" id="pathRow" hidden>
+        <label for="modelPath">手动路径</label>
+        <input id="modelPath" type="text" spellcheck="false"
+               placeholder="D:\models\Qwen3-ASR-1.7B">
+        <button id="btnPathCheck" class="ghost">校验</button>
+      </div>
+
+      <p id="modelMsg" class="msg"></p>
+      <p id="engineMsg" class="hint small"></p>
+    </section>
+
+    <!-- ---------- 推理 ---------- -->
+    <section class="card">
+      <div class="card-head">
+        <h2>推理后端</h2>
+      </div>
+      <p class="hint">
+        一般不用动。<code>auto</code> = 有 N 卡就用显卡（快约 5 倍），没有就用 CPU。
+        显存不够或想省电时可以强制 CPU。
+      </p>
+
+      <div class="field">
+        <label for="devSel">设备</label>
+        <select id="devSel">
+          <option value="auto">auto（自动选择）</option>
+          <option value="cuda:0">cuda:0（显卡）</option>
+          <option value="cpu">cpu（处理器）</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label for="dtypeSel">精度</label>
+        <select id="dtypeSel">
+          <option value="auto">auto（显卡 bf16 / CPU fp32）</option>
+          <option value="bfloat16">bfloat16（快，需较新显卡）</option>
+          <option value="float32">float32（最稳，最慢）</option>
+          <option value="float16">float16（更快，老显卡可能不稳）</option>
+        </select>
+      </div>
+
+      <p class="hint small">
+        改完不是立刻生效：模型要等下一次「开始」才重新加载，否则保存按钮会卡十几秒。
+      </p>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="/static/settings.js"></script>
+</body>
+</html>

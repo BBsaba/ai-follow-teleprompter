@@ -1,0 +1,35 @@
+name: CI
+
+# 只跑「不需要模型、不需要服务」的那 194 项（tests/run_all.py --fast）。
+# 剩下 71 项不在 CI 里跑：14 项要 1.75 GB 权重，57 项要服务在 127.0.0.1:8756 跑着。
+# 本地 `python tests/run_all.py` 才是全集 265 项。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: 装依赖（不含 torch / transformers，所以模型测试会跳过）
+        run: |
+          python -m pip install --upgrade pip
+          pip install "numpy>=1.26" "pypinyin>=0.51" "sounddevice>=0.4.6" "fastapi>=0.110" "uvicorn>=0.27"
+
+      - name: 跑测试
+        run: python tests/run_all.py --fast

@@ -1,0 +1,30 @@
+# 模型权重：1.8 GB，远超 GitHub 单文件 100 MB 上限，不进版本库。
+# 别人 clone 之后跑 python tools/download_model.py 自动拉取。
+# ——注意：只是不进 git，文件夹里照样有，压缩包发人没问题。
+models/
+
+# 用户数据：自己录的稿子、字号红线偏好，属于隐私，不进库
+data/
+
+# 打包产物：tools/package.py 生成，随时可重建
+dist/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 运行时产物
+*.log
+
+# 测试与截图产物
+.pytest_cache/
+shots/

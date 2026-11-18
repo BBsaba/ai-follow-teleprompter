@@ -1,0 +1,105 @@
+:root {
+  --fs: 64px;
+  --lh: 1.9;
+  --per: 14;
+  --cue: 0.42;
+  --gap: 8px;
+  --thick: 2px;
+  --bg: #000000;
+  --fg: #FFFFFF;
+  --read: #7A7A7A;
+  --red: #FF2D2D;
+  --red2: #8A8A8A;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  background: var(--bg);
+  overflow: hidden;
+  cursor: none;
+}
+
+#stage {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+body.mirror #stage { transform: scaleX(-1); }
+
+#text {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  z-index: 1;
+  width: calc(var(--fs) * (var(--per) + 1.2));
+  transform: translateX(-50%) translateY(0);
+  transition: transform .12s ease-out;
+  font-family: "Microsoft YaHei", "PingFang SC", "Source Han Sans SC", "Noto Sans CJK SC", sans-serif;
+  font-weight: 600;
+  font-size: var(--fs);
+  line-height: var(--lh);
+  color: var(--fg);
+  will-change: transform;
+}
+
+#text.no-anim { transition: none; }
+
+.line {
+  height: calc(var(--fs) * var(--lh));
+  white-space: nowrap;
+}
+
+.ch { color: var(--fg); }
+.line.read .ch { color: var(--read); }
+.ch.read { color: var(--read); }
+
+/* 上下边缘柔化：半截字不再硬切，改为渐隐 */
+#fade-top,
+#fade-bot {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  height: 0;
+  pointer-events: none;
+}
+#fade-top {
+  top: 0;
+  height: var(--fadeT, 0px);
+  background: linear-gradient(to bottom, var(--bg) var(--fadeTSolid, 55%), transparent 100%);
+}
+#fade-bot {
+  bottom: 0;
+  height: var(--fadeB, 0px);
+  background: linear-gradient(to top, var(--bg) var(--fadeBSolid, 55%), transparent 100%);
+}
+
+#cue {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 3;
+  height: var(--thick);
+  top: calc(var(--cue) * 100%);
+  background: var(--red);
+  transition: background .15s;
+}
+
+#cue.paused { background: var(--red2); }
+
+#hint {
+  position: absolute;
+  left: 28px;
+  bottom: 20px;
+  font: 500 14px/1 system-ui, -apple-system, sans-serif;
+  letter-spacing: .08em;
+  color: #6A6A6A;
+  opacity: 0;
+  transition: opacity .15s;
+}
+#hint.show { opacity: 1; }

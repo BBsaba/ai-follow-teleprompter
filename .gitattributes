@@ -1,0 +1,9 @@
+# 换行符统一：仓库里一律存 LF，Windows 批处理在检出时转回 CRLF
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制，别做任何转换
+*.ico binary
+*.png binary
+*.wav binary

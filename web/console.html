@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>提词器 · 控制台</title>
+<link rel="stylesheet" href="/static/console.css">
+</head>
+<body>
+  <header>
+    <span class="brand">提词器 <em>v2.0</em></span>
+    <select id="scripts" title="稿件"></select>
+    <button id="btnNew">新建</button>
+    <button id="btnImport">导入</button>
+    <button id="btnDel" title="删除当前稿件">删除</button>
+    <input type="file" id="file" accept=".txt,.md" hidden>
+    <span id="saveState" class="save">已保存</span>
+    <span class="spacer"></span>
+    <span id="modeTag" class="tag">待机</span>
+    <button id="btnSettings" title="麦克风、模型与推理设置">设置</button>
+    <button id="btnPrompter" class="primary">打开提词窗</button>
+  </header>
+
+  <main>
+    <section class="editor">
+      <textarea id="text" spellcheck="false" placeholder="把口播稿粘进来……"></textarea>
+      <footer>
+        <span id="stats">0 字 · 0 行</span>
+        <span id="clampHint" class="warn"></span>
+      </footer>
+    </section>
+
+    <aside>
+      <div id="previewBox">
+        <iframe id="preview" src="/prompter?embed=1" tabindex="-1"></iframe>
+      </div>
+
+      <div class="controls">
+        <div class="seg" id="segMode" role="group" aria-label="推进方式">
+          <button type="button" id="btnModeAuto" class="seg-btn on">自动滚动</button>
+          <button type="button" id="btnModeAi" class="seg-btn">AI 跟随</button>
+        </div>
+        <p class="note" id="modeNote">自动滚动：按「速度」匀速推进，不用麦克风。</p>
+        <p class="ai-status" id="aiStatus" hidden></p>
+        <label>字号 <input type="range" id="rFont" step="2"><output id="oFont"></output></label>
+        <label>每行 <input type="range" id="rPer" step="1"><output id="oPer"></output></label>
+        <label>红线 <input type="range" id="rCue" step="1"><output id="oCue"></output></label>
+        <label>速度 <input type="range" id="rCps" step="0.1"><output id="oCps"></output></label>
+        <div class="row">
+          <button id="btnStart" class="primary wide">开始</button>
+          <button id="btnMirror">镜像</button>
+        </div>
+        <p class="note">录制中只响应：空格暂停 / Esc 退出 / 滚轮拨行</p>
+
+        <div class="asr">
+          <div class="asr-head">
+            <span>语音识别</span>
+            <span id="asrChip" class="chip">未开启</span>
+          </div>
+          <div class="vu"><i id="vuBar"></i></div>
+          <div class="asr-meta">
+            <span id="asrDev">—</span>
+            <span id="asrRtf">—</span>
+          </div>
+          <div id="asrText" class="asr-text">按住下方按钮打开麦克风，说一句试试。</div>
+          <div id="asrAlign" class="asr-align">未跟随</div>
+          <div id="asrErr" class="asr-err"></div>
+          <div class="row">
+            <button id="btnAsr" class="wide">开启麦克风</button>
+            <button id="btnAsrTest" title="用自带样例音频试跑一次，不需要说话">自检</button>
+          </div>
+          <p class="note">开麦后开始说话即可；<b>只有 AI 跟随模式</b>会把识别结果变成位置。</p>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <script src="/static/console.js"></script>
+</body>
+</html>

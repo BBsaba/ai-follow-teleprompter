@@ -1,0 +1,326 @@
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  background: #14161A;
+  color: #E6E8EC;
+  font: 14px/1.5 "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+  overflow: hidden;
+}
+
+body {
+  display: grid;
+  grid-template-rows: 52px 1fr;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 16px;
+  border-bottom: 1px solid #262A31;
+  background: #171A1F;
+}
+
+.brand { font-weight: 600; letter-spacing: .02em; margin-right: 8px; }
+.brand em { font-style: normal; color: #6B7280; font-size: 12px; margin-left: 4px; }
+.spacer { flex: 1; }
+
+select, button, input[type="range"] {
+  font: inherit;
+  color: inherit;
+}
+
+select {
+  background: #1E2228;
+  border: 1px solid #2C313A;
+  border-radius: 8px;
+  padding: 6px 10px;
+  min-width: 150px;
+}
+
+button {
+  background: #1E2228;
+  border: 1px solid #2C313A;
+  border-radius: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: background .12s, border-color .12s;
+}
+button:hover { background: #262B33; }
+button.primary { background: #2F6BFF; border-color: #2F6BFF; color: #fff; }
+button.primary:hover { background: #3D77FF; }
+button:disabled { opacity: .45; cursor: not-allowed; }
+button.wide { flex: 1; }
+
+/* 禁用的滑块要看得出来。光有 disabled 属性不够——
+   range 的拇指照样是亮蓝色，用户会以为它还在生效。 */
+input[type="range"]:disabled { opacity: .3; cursor: not-allowed; }
+
+.save { color: #6B7280; font-size: 12px; margin-left: 4px; }
+.save.err { color: #E5484D; }
+.save.ok { color: #3FB950; }
+
+.tag {
+  font-size: 12px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: #23272E;
+  color: #9AA3AE;
+}
+.tag.running { background: #12331E; color: #3FB950; }
+.tag.paused { background: #33290F; color: #D29922; }
+
+main {
+  display: grid;
+  grid-template-columns: 1fr 460px;
+  min-height: 0;
+}
+
+.editor {
+  display: grid;
+  grid-template-rows: 1fr 34px;
+  min-height: 0;
+  border-right: 1px solid #262A31;
+}
+
+#text {
+  width: 100%;
+  height: 100%;
+  resize: none;
+  border: 0;
+  outline: none;
+  padding: 22px 26px;
+  background: #101216;
+  color: #D7DCE3;
+  font: 15px/1.9 "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+  tab-size: 2;
+}
+
+.editor footer {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0 18px;
+  border-top: 1px solid #262A31;
+  color: #6B7280;
+  font-size: 12px;
+}
+.warn { color: #D29922; }
+
+/* 侧栏用 flex 而不是 grid：早先用 `grid-template-rows: auto 1fr` 时，
+   窗口高度不够（1280×800 这种笔记本尺寸）预览框会和控制面板重叠，
+   模式开关被压在 iframe 底下点不到 —— 用户会以为"开关坏了"。
+   flex + `flex: 0 0 auto` 保证预览框永不被压缩，多的内容由侧栏整体滚动。 */
+aside {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 14px;
+  gap: 12px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+#previewBox {
+  position: relative;
+  width: 100%;
+  flex: 0 0 auto;          /* 只按 16:9 定高，谁也压不动它 */
+  aspect-ratio: 16 / 9;
+  background: #000;
+  border: 1px solid #2C313A;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+#preview {
+  position: absolute;
+  width: 1920px;
+  height: 1080px;
+  border: 0;
+  transform-origin: top left;
+  pointer-events: none;
+}
+
+.controls {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  flex: 1 0 auto;          /* 内容比剩余空间高时撑开，让 aside 出滚动条 */
+}
+
+/* 推进方式：两选一的分段开关。做成"选中项要一眼看出来"，
+   因为这是整块界面里唯一决定"谁来推动文字"的开关。 */
+.seg {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  padding: 4px;
+  background: #0E1116;
+  border: 1px solid #22262D;
+  border-radius: 10px;
+}
+.seg-btn {
+  border: 1px solid transparent;
+  background: transparent;
+  color: #8A94A2;
+  font-size: 13px;
+  padding: 7px 6px;
+  border-radius: 7px;
+}
+.seg-btn:hover { background: #171B21; }
+.seg-btn.on {
+  background: #1B2430;
+  border-color: #2C3B4D;
+  color: #E8EDF3;
+  font-weight: 600;
+}
+.seg-btn.on::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: #2F6BFF;
+  vertical-align: middle;
+}
+#modeNote { margin: -2px 0 2px; }
+
+/* AI 跟随的运行状态：一句话回答"现在到底有没有在听、听没听懂"。
+   只在这个模式下显示——选了 AI 跟随，界面就必须说清楚它是不是真的在干活，
+   否则"稿子不动"和"程序坏了"从外面看是一模一样的。 */
+.ai-status {
+  margin: 2px 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.55;
+  border: 1px solid #22262D;
+  background: #101216;
+  color: #9AA3AE;
+  /* 报错文案是后端给的多行纯文本（如「没找到模型权重」两行），要保留换行 */
+  white-space: pre-line;
+}
+.ai-status[hidden] { display: none; }
+.ai-status.off  { border-color: #3E2C10; background: #1A1408; color: #D29922; }
+.ai-status.load { border-color: #3E2C10; background: #1A1408; color: #D29922; }
+.ai-status.live { border-color: #1E5A2E; background: #0D1B12; color: #62D97C; }
+.ai-status.warn { border-color: #3E2C10; background: #1A1408; color: #E5A94D; }
+.ai-status.err  { border-color: #4A1D1F; background: #1D0F11; color: #FF6369; }
+.ai-status b { color: #fff; font-weight: 600; }
+
+.controls label {
+  display: grid;
+  grid-template-columns: 42px 1fr 76px;
+  align-items: center;
+  gap: 10px;
+  color: #9AA3AE;
+  font-size: 13px;
+}
+
+.controls output {
+  text-align: right;
+  color: #D7DCE3;
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+}
+
+input[type="range"] {
+  -webkit-appearance: none;
+  height: 3px;
+  background: #2C313A;
+  border-radius: 2px;
+  outline: none;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #2F6BFF;
+  cursor: pointer;
+}
+
+.row { display: flex; gap: 8px; margin-top: 4px; }
+
+/* ---------- 语音识别面板 ---------- */
+.asr {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid #262A31;
+  display: grid;
+  gap: 8px;
+}
+.asr-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  color: #9AA3AE;
+}
+.chip {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #23272E;
+  color: #7C8794;
+}
+.chip.on { background: #12331E; color: #3FB950; }
+.chip.load { background: #33290F; color: #D29922; }
+
+.vu {
+  height: 4px;
+  border-radius: 2px;
+  background: #23272E;
+  overflow: hidden;
+}
+.vu i {
+  display: block;
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #2F6BFF, #3FB950);
+  transition: width .08s linear;
+}
+.asr-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: #5C6470;
+  font-variant-numeric: tabular-nums;
+}
+.asr-text {
+  min-height: 52px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #101216;
+  border: 1px solid #22262D;
+  color: #C7CDD6;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.asr-align {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: #6B7280;
+}
+.asr-align.ok { color: #62D97C; }
+.asr-align.warn { color: #E5A94D; }
+.asr-err {
+  font-size: 11px;
+  color: #E5484D;
+  white-space: pre-wrap;
+}
+.asr-err:empty { display: none; }
+#btnAsr.on { background: #12331E; border-color: #1E5A2E; color: #62D97C; }
+
+.note {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: #5C6470;
+  line-height: 1.6;
+}

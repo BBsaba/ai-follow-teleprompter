@@ -1,0 +1,21 @@
+# ---- R1：壳与渲染（装了就能跑，不需要模型） ----
+fastapi>=0.110
+uvicorn>=0.27
+pypinyin>=0.51
+
+# ---- R2：语音识别 ----
+# ⚠️ 版本必须锁死，这一组是实测能跑的；放宽任何一条都会炸（详见 docs 的 §11.4）
+#   · transformers 5.x 会让 qwen-asr 的 modeling 报 check_model_inputs 错
+#   · transformers 4.x 要求 huggingface-hub<1.0
+#   · qwen3_asr 架构只在 transformers 5.x 里有，所以走 qwen-asr 就必须待在 4.57.6
+transformers==4.57.6
+huggingface-hub<1.0
+qwen-asr==0.0.6
+safetensors>=0.4
+numpy>=1.26
+sounddevice>=0.4.6
+
+# torch：从 PyPI 默认装到的是 CPU 版，实测 RTF 0.30 能跑。
+# 想用显卡加速，按 https://pytorch.org 的命令装 CUDA 版，例如：
+#   pip install torch --index-url https://download.pytorch.org/whl/cu126
+torch>=2.4

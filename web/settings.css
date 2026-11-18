@@ -1,0 +1,224 @@
+/* 设置页。配色与 console.css 保持一致，别再发明一套。 */
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  background: #14161A;
+  color: #E6E8EC;
+  font: 14px/1.5 "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+}
+
+body {
+  display: grid;
+  grid-template-rows: 52px auto 1fr;
+  min-height: 100vh;
+}
+
+/* ---------- 头部 ---------- */
+header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 20px;
+  border-bottom: 1px solid #262A31;
+  background: #171A1F;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.brand { font-weight: 600; letter-spacing: .02em; }
+.brand em { font-style: normal; color: #6B7280; font-size: 12px; margin-left: 6px; }
+.spacer { flex: 1; }
+
+.link {
+  color: #7C8794;
+  text-decoration: none;
+  font-size: 13px;
+  padding: 6px 8px;
+  border-radius: 8px;
+}
+.link:hover { color: #E6E8EC; background: #1E2228; }
+
+button {
+  font: inherit;
+  color: inherit;
+  background: #1E2228;
+  border: 1px solid #2C313A;
+  border-radius: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: background .12s, border-color .12s;
+}
+button:hover { background: #262B33; }
+button.primary { background: #2F6BFF; border-color: #2F6BFF; color: #fff; }
+button.primary:hover { background: #3D77FF; }
+button:disabled { opacity: .45; cursor: not-allowed; }
+button.ghost { background: transparent; color: #9AA3AE; }
+button.ghost:hover { background: #1E2228; color: #E6E8EC; }
+
+/* ---------- 锁定提示 ---------- */
+.banner {
+  margin: 0;
+  padding: 10px 20px;
+  background: #1A1408;
+  color: #D29922;
+  border-bottom: 1px solid #3E2C10;
+  font-size: 13px;
+}
+.banner[hidden] { display: none; }
+
+/* ---------- 主体 ---------- */
+main {
+  width: 100%;
+  max-width: 780px;
+  margin: 0 auto;
+  padding: 22px 20px 60px;
+  display: grid;
+  gap: 18px;
+  align-content: start;
+}
+
+.card {
+  background: #171A1F;
+  border: 1px solid #262A31;
+  border-radius: 12px;
+  padding: 16px 18px 18px;
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.card-head h2 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.hint {
+  color: #7C8794;
+  font-size: 12.5px;
+  line-height: 1.65;
+  margin: 6px 0 14px;
+}
+.hint.small { margin: 10px 0 0; font-size: 12px; color: #6B7280; }
+.hint code {
+  background: #1E2228;
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-family: Consolas, monospace;
+  font-size: 12px;
+  color: #B9C2CE;
+}
+
+/* ---------- 表单行 ---------- */
+.field {
+  display: grid;
+  grid-template-columns: 84px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.field .label,
+.field label {
+  color: #9AA3AE;
+  font-size: 13px;
+}
+
+/* ⚠️ 必须显式写。浏览器默认的 [hidden]{display:none} 属于 UA 样式表，
+   优先级低于作者写的 .field{display:grid}，于是 hidden 属性会失效——
+   「手动路径」曾因此在选「自动」时照样显示出来。 */
+.field[hidden] { display: none; }
+
+/* 输入框占 1fr，按钮别跟着被拉满一行 */
+.field > button { justify-self: start; }
+
+select, input[type="text"] {
+  font: inherit;
+  color: inherit;
+  background: #1E2228;
+  border: 1px solid #2C313A;
+  border-radius: 8px;
+  padding: 7px 10px;
+  width: 100%;
+  min-width: 0;
+}
+select:focus, input[type="text"]:focus {
+  outline: none;
+  border-color: #2F6BFF;
+}
+select:disabled, input[type="text"]:disabled { opacity: .5; }
+
+.msg {
+  font-size: 12.5px;
+  margin: 8px 0 0;
+  min-height: 18px;
+  white-space: pre-line;
+}
+.msg.ok { color: #3FB950; }
+.msg.err { color: #FF6369; }
+.msg.warn { color: #D29922; }
+
+/* ---------- 电平条 ---------- */
+/* 光秃秃一条深色横杠会被当成分隔线，所以左边加个「电平」标签 */
+.vu-row {
+  display: grid;
+  grid-template-columns: 84px 1fr;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+}
+.vu-label {
+  color: #9AA3AE;
+  font-size: 13px;
+}
+.vu {
+  height: 8px;
+  border-radius: 4px;
+  background: #23272E;
+  border: 1px solid #2C313A;
+  overflow: hidden;
+}
+.vu > i {
+  display: block;
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #2F6BFF, #3FB950);
+  transition: width .08s linear;
+}
+
+/* ---------- 小标签 ---------- */
+.chip {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #23272E;
+  color: #7C8794;
+}
+.chip.on { background: #12331E; color: #3FB950; }
+.chip.warn { background: #33290F; color: #D29922; }
+.chip.err { background: #2C1113; color: #FF6369; }
+
+/* ---------- 保存提示 ---------- */
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%);
+  padding: 10px 18px;
+  border-radius: 10px;
+  font-size: 13px;
+  background: #1E2228;
+  border: 1px solid #2C313A;
+  color: #E6E8EC;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .45);
+  max-width: 90vw;
+  white-space: pre-line;
+}
+.toast[hidden] { display: none; }
+.toast.ok { border-color: #1E5A2E; color: #62D97C; }
+.toast.err { border-color: #4A1D1F; color: #FF6369; }
