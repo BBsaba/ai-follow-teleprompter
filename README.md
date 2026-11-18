@@ -36,9 +36,9 @@
 
 ---
 
-## 用的是哪款开源模型
+## 开发者用的是哪款开源模型
 
-**唯一的外部依赖是语音识别模型：[`Qwen3-ASR-0.6B`](https://github.com/QwenLM/Qwen3-ASR)。**
+**推荐的外部依赖是语音识别模型：[`Qwen3-ASR-0.6B`](https://github.com/QwenLM/Qwen3-ASR)。**
 
 | 项 | 值 |
 |---|---|
@@ -50,6 +50,8 @@
 | 下载地址 | [ModelScope](https://modelscope.cn/models/Qwen/Qwen3-ASR-0.6B)（国内快） / [Hugging Face](https://huggingface.co/Qwen/Qwen3-ASR-0.6B) |
 | 在项目里的位置 | `models/Qwen3-ASR-0.6B/` |
 | 谁下载 | `python tools/download_model.py`，默认走 ModelScope，支持断点续传 |
+
+理论上来说任何模型都能兼容，根据你电脑硬件情况装载即可，不过过于小的模型识别速度可能有些狼狈，需要注意，我也没咋试别的模型兼容性，不过这年头手头上应该都有workbuddy或者DSH之类的智能体，一句话改改就行
 
 > **⚠️ 最容易混的一点：模型和 torch 是两样东西。**
 >
