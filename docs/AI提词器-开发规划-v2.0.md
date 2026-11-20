@@ -1406,7 +1406,11 @@ torch 的 CUDA 版**只能**从 `https://download.pytorch.org/whl/cu126` 拿，�
 
 ### 17.1 什么时候算一个版本
 
-改完代码 → 本地 `python tests/run_all.py` 265 项全过 → push 后 CI 绿 → 可以发版。
+改完代码 → 本地 `python tests/run_all.py` 全过 → push 后 CI 绿 → 可以发版。
+
+⚠️ 具体项数别照着旧数字写进文档：v2.0.1 时记的是 265 项，v2.2.4 实测
+`--fast` 194 项、完整套件 220 项（`test_ui.py` 因缺 playwright 被跳过）。
+测试会增减，**以当次 `run_all.py` 打印的合计为准**，别把数字当契约。
 
 补丁号（2.0.**x**）修 bug，次版本号（2.**x**.0）加功能。
 
@@ -1448,7 +1452,10 @@ GitHub 对**单个文件**限制 100 MB。`models/Qwen3-ASR-0.6B/model.safetenso
 
 ### 17.5 Release 附件放什么
 
-**什么都不用放**。GitHub 会为每个 tag 自动生成 `Source code (zip)` 和
+**v2.2.4 起：放安装包。** `AI提词器-<版本>-安装程序.exe`（约 13 MB），改名为
+`AITeleprompter-<版本>-Setup.exe` 再传（原因见 17.7）。
+
+**v2.1 之前：什么都不用放**。GitHub 会为每个 tag 自动生成 `Source code (zip)` 和
 `Source code (tar.gz)`，内容就是该 commit 的完整快照，够用。
 
 想额外给「带模型的离线包」，用 `python tools/package.py --with-model`
@@ -1462,6 +1469,31 @@ GitHub 对**单个文件**限制 100 MB。`models/Qwen3-ASR-0.6B/model.safetenso
 | tag 指向对不对 | Releases 页面上那个 commit 短哈希和时间 |
 | CI 绿不绿 | Actions 页面最近一次运行 |
 | 源码包能下不 | 点一下 `Source code (zip)` 试试 |
+
+### 17.7 ⛔ Release 附件名不支持非 ASCII（v2.2.4 实测）
+
+本地构建产物叫 `AI提词器-2.2.4-安装程序.exe`。传成 Release 附件之后，名字变成
+**`AI.-2.2.4-.exe`** —— 中文被 GitHub 当非法字符处理掉了。
+
+试过的三条路，全部救不回来：
+
+| 做法 | 结果 |
+|---|---|
+| 上传时 `name=` 用 UTF-8 百分号编码 | 落库后仍是 `AI.-2.2.4-.exe` |
+| `PATCH /releases/assets/{id}` 改名 | 返回 **200**，但读回来名字没变（静默失败，最坑） |
+| `json.dumps` 改 `ensure_ascii=False` 再 PATCH | 同样 200，同样没变 |
+
+所以结论是：**Release 附件名只能用 ASCII**。发版时把本地文件重命名成
+`AITeleprompter-<版本>-Setup.exe` 再传。本地 `dist/` 里保持中文名无所谓，
+只有 Release 上那个名字会受影响。
+
+⚠️ **改了 Release 上的名字，README 和 Release 正文里的下载文件名都要同步改** ——
+否则用户照着 README 找 `AI提词器-2.2.4-安装程序.exe`，页面上只有
+`AITeleprompter-2.2.4-Setup.exe`，会以为下错了。
+
+> 上传用 `POST {upload_url}?name=...`，`Content-Type: application/octet-stream`，
+> 整个文件读进内存一次 POST 即可（13 MB 不需要分片）。
+> 验证方法：`curl -r 0-2047` 拉前 2 KB，开头两个字节应该是 `MZ`（PE 可执行）。
 
 ---
 

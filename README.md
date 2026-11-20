@@ -427,7 +427,7 @@ python tests/run_all.py --fast   # 只跑不需要服务和模型的（十几秒
 | `test_ui.py` | 控制台联动、渲染、窗口自适应、按键拦阻、AI 状态条 | 服务在跑 + playwright |
 
 实测：`--fast` **194 项**（5 个文件）；完整套件 **220 项**（8 个文件，需服务在跑）。
-`test_ui.py` 要额外装 playwright，没装会跳过并说明原因。
+`test_ui.py` 要额外装 playwright，没装会跳过并说明原因 —— 跳过的是它一个，其余照跑。
 
 ```bash
 pip install playwright
