@@ -40,7 +40,7 @@
 
 ### 推荐：装安装包
 
-从 [Releases](../../releases) 下载 **`AI提词器-2.2.4-安装程序.exe`**（13 MB），双击。
+从 [Releases](../../releases) 下载 **`AITeleprompter-2.2.4-Setup.exe`**（13 MB），双击。
 
 装的过程会问你四件事：
 
@@ -455,6 +455,12 @@ python tools/build_installer.py --version 2.2.5
 调试代码改动时加 `--skip-runtime` 复用已有的 `build/payload/python`，几秒就能出包。
 
 > 安装包**不含** torch、transformers 和模型权重 —— 那些在用户机器上按需下载。所以包只有 13 MB。
+
+> ⚠️ **往 GitHub Release 传的时候要改成 ASCII 文件名。** `build_installer.py` 本地产出的
+> 是 `AI提词器-<版本>-安装程序.exe`，但 Release 附件名不支持非 ASCII —— 传上去中文会被
+> 直接替换掉，`AI提词器-2.2.4-安装程序.exe` 会变成 `AI.-2.2.4-.exe`，PATCH 改名也救不回来
+> （接口返回 200，名字不变）。所以 release 上用的是 `AITeleprompter-<版本>-Setup.exe`，
+> 本地文件保持中文名。两处文件名因此不一致，是正常的。
 
 ---
 
