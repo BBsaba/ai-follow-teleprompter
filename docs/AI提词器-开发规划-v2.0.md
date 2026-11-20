@@ -1408,8 +1408,9 @@ torch 的 CUDA 版**只能**从 `https://download.pytorch.org/whl/cu126` 拿，�
 
 改完代码 → 本地 `python tests/run_all.py` 全过 → push 后 CI 绿 → 可以发版。
 
-⚠️ 具体项数别照着旧数字写进文档：v2.0.1 时记的是 265 项，v2.2.4 实测
-`--fast` 194 项、完整套件 220 项（`test_ui.py` 因缺 playwright 被跳过）。
+⚠️ 具体项数别照着旧数字写进文档：v2.0.1 时记的是 265 项，v2.2.4 是 `--fast` 194 /
+完整 220（`test_ui.py` 因缺 playwright 被跳过），v2.3.0 是 `--fast` **249** /
+完整 **320**（多了 `test_storage.py` 34 项）。
 测试会增减，**以当次 `run_all.py` 打印的合计为准**，别把数字当契约。
 
 补丁号（2.0.**x**）修 bug，次版本号（2.**x**.0）加功能。
@@ -1494,6 +1495,100 @@ GitHub 对**单个文件**限制 100 MB。`models/Qwen3-ASR-0.6B/model.safetenso
 > 上传用 `POST {upload_url}?name=...`，`Content-Type: application/octet-stream`，
 > 整个文件读进内存一次 POST 即可（13 MB 不需要分片）。
 > 验证方法：`curl -r 0-2047` 拉前 2 KB，开头两个字节应该是 `MZ`（PE 可执行）。
+
+### 17.8 ⛔ `git push` 报 CRYPT_E_NO_REVOCATION_CHECK（v2.3.0 实测）
+
+报错原文：
+
+```
+fatal: unable to access 'https://github.com/BBsaba/...': schannel:
+next InitializeSecurityContext failed: CRYPT_E_NO_REVOCATION_CHECK (0x80092012)
+```
+
+根因：这台机器的出网走本机透明代理，**CRL / OCSP 的响应拉不回来**。schannel（Windows
+的 TLS 实现）验完证书链之后还要查「这张证书有没有被吊销」，查不到就当失败。
+
+| 做法 | 结果 |
+|---|---|
+| 只设 `http.schannelCheckRevoke=false` | ❌ 仍报同一个错 |
+| 换 OpenSSL 后端 `http.sslBackend=openssl` | ❌ `unable to get local issuer certificate`（代理换了证书，自带 ca-bundle 认不出） |
+| `GIT_SSL_NO_VERIFY=1` | ✅ 能过，但等于关掉全部证书校验，不该固化 |
+| **`http.sslBackend=schannel` + `http.schannelCheckRevoke=false`** | ✅ **正解** |
+
+**为什么单独设那一项没用**：git 只有在**明确知道后端是 schannel** 时才去读
+`schannelCheckRevoke`；不声明后端，它走「自动探测」路径，压根不读这一项。
+这条是查配置文档看不出来的，只能靠对照实验撞出来。
+
+写进仓库 `.git/config`（不污染别的项目）：
+
+```bash
+git config http.sslBackend schannel
+git config http.schannelCheckRevoke false
+```
+
+⚠️ 这只是**不查吊销列表**，证书链和域名照样验 —— 与 `sslVerify=false`（连「这证书是不是
+github.com 的」都不问）有本质区别，别混为一谈。
+
+3 秒复现的对照实验：
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" https://api.github.com                   # 000
+curl -s -o /dev/null -w "%{http_code}\n" --ssl-no-revoke https://api.github.com   # 200
+```
+
+### 17.9 ⛔ 每次 push 都弹「Select a credential helper」（v2.3.0 实测）
+
+现象：`git push` 弹出一个 `CredentialHelperSelector` 小窗，三个单选 `<no helper>` /
+`manager` / `wincred`，底下还有「Always use this from now on」。选了 `manager`、勾了
+「Always」，**下一次照样弹**。
+
+根因不在仓库里。`credential.helper` 写在两个地方：
+
+```
+file:.../PortableGit/etc/gitconfig    credential.helper=helper-selector
+file:C:/Users/admin/.gitconfig        credential.helper=!"...git-credential-manager.exe"
+```
+
+`credential.helper` 是**多值配置，git 会依次执行每一条**。系统级的 `helper-selector`
+永远排最前，所以每次都先弹窗，用户选完 GCM 才被调用。
+
+⚠️ **两个观测陷阱**（我两个都踩了）：
+
+- `git config --get credential.helper` 只显示**最后一条**（GCM），看起来一切正常；
+  必须 `--get-all` 才露出两条。
+- 只查仓库级（`git config --get credential.helper` 在仓库目录里跑）也会误判 ——
+  得 `git config --list --show-origin` 才看得出它们来自**不同文件**。
+
+解法：用 git 官方的「空值重置」机制 —— 空字符串会把之前累积的列表**清空**：
+
+```bash
+git config --global --unset-all credential.helper
+git config --global --add credential.helper ""      # 空值 = 清空
+git config --global --add credential.helper "manager"
+```
+
+写出来是：
+
+```ini
+[credential]
+	helper = 
+	helper = manager
+```
+
+验证（不真推，只看调用了谁）：
+
+```bash
+GIT_TRACE=1 git push --dry-run origin main 2>&1 | grep -i credential
+# 正确：只有 'git credential-manager get' / 'store'
+# 错误：出现 'git-credential-helper-selector'
+```
+
+⛔ **不要去改 `PortableGit/etc/gitconfig`** —— 那是 WorkBuddy 自带 Git 的安装文件，
+随应用升级会被覆盖，改了等于白改。
+
+> 附带结论：`gh-release.py` 用的是 Windows 凭据库里的 token 走 REST API，
+> 完全不受上面这套 git 配置影响。所以「能发 Release」和「能 push」是两条独立的链路，
+> 一条通不代表另一条通。
 
 ---
 
