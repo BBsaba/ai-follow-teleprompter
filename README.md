@@ -332,12 +332,22 @@ pip install torch --index-url https://download.pytorch.org/whl/cu126
 ### 桌面快捷方式（可选）
 
 ```bash
-python tools/make_shortcut.py             # 在桌面建一个
-python tools/make_shortcut.py --remove    # 删掉它
-python tools/make_shortcut.py --all-users # 建到公共桌面（需管理员）
+python tools/make_shortcut.py                 # 建到当前用户桌面（无控制台窗口）
+python tools/make_shortcut.py --with-console  # 指向 start.bat，保留黑框，开发时看报错
+python tools/make_shortcut.py --show          # 看看现在指向哪
+python tools/make_shortcut.py --remove        # 删掉它
+python tools/make_shortcut.py --all-users     # 建到公共桌面（需管理员）
 ```
 
-需要 `pip install pywin32` —— **只有建快捷方式这一步用，程序运行不需要**。不装也行：右键 `start.bat` → 发送到 → 桌面快捷方式，效果一样（只是图标是默认的）。
+默认指向 **`pythonw.exe` + `run.py`**，双击不弹黑框 —— 和安装版是同一种启动方式。
+找解释器的顺序和 `start.bat` 一致：`.venv\Scripts\pythonw.exe` → `%TELEPROMPTER_PYTHON%`
+旁边的 `pythonw.exe` → 当前解释器旁边的。都找不到才退回 `start.bat`（那样会有黑框）。
+
+**不需要 `pip install pywin32`**：`tools/win_shortcut.py` 用 ctypes 直接调 Windows 的
+`IShellLinkW` / `IPersistFile`，和资源管理器建快捷方式走的是同一套 API。
+
+> 从源码跑的人常犯一个错：先跑 `make_shortcut.py`，再手动把快捷方式改成别的解释器。
+> 不用改，`--show` 会告诉你它到底指向哪个 `pythonw.exe`。
 
 图标 `assets/teleprompter.ico` 由 `tools/make_icon.py` 生成（需要 pillow，同样只有生成时用）：黑底 + 三行白字 + 一根红线，就是提词窗本身的样子。
 
@@ -388,7 +398,8 @@ ai-follow-teleprompter/
 │   ├── download_model.py   断点续传下载权重
 │   ├── package.py          打成 zip（代码版 / 带模型版）
 │   ├── make_icon.py        生成 assets/teleprompter.ico（需 pillow）
-│   └── make_shortcut.py    建/删桌面快捷方式（需 pywin32）
+│   ├── win_shortcut.py     建 .lnk：ctypes 直调 IShellLinkW，无需 pywin32
+│   └── make_shortcut.py    建/看/删桌面快捷方式（默认指向 pythonw，无控制台）
 ├── models/                 模型权重（不进 git，1.8 GB）
 ├── data/                   你的稿子和偏好（不进 git）
 ├── docs/                   开发全过程记录 + README 用的截图

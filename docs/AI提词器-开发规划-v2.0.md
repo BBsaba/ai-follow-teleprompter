@@ -2217,6 +2217,87 @@ MSYS_NO_PATHCONV=1 "dist\AI提词器-x.y.z-安装程序.exe" /VERYSILENT /NOREST
 
 ---
 
+## 20. 源码版的快捷方式：怎么让 `make_shortcut.py` 也不弹黑框
+
+**问题**：`tools/make_shortcut.py` 从第一天起就指向 `start.bat`。`start.bat` 是个批处理，
+双击**必然**先开一个 `cmd.exe` 窗口 —— 于是同一台机器上出现两种体验：安装版双击没黑框，
+源码版双击一个黑框杵在那儿。用户会以为"源码版比较落后"，其实只是快捷方式指错了东西。
+
+**为什么当初指向 bat**：v2.2.1 之前，`pythonw` 下 `run.py` 根本跑不起来（`sys.stdout` 是
+`None`，uvicorn 初始化第一步就抛异常，见 §18.14）。那时只能靠 `start.bat` 里的
+`pause` 把报错留在屏幕上。**v2.2.1 把这个问题修好之后，这个妥协就该撤掉了，但没人回头改。**
+
+**修法**：
+
+- 默认目标改成 `pythonw.exe` + `run.py`，工作目录仍是工程根
+- 保留 `--with-console`，指向 `start.bat` —— 开发时看得见 traceback，这个需求是真的
+- 找解释器的顺序和 `start.bat` 对齐：`.venv\Scripts\pythonw.exe` → `%TELEPROMPTER_PYTHON%`
+  旁边的 `pythonw.exe` → 当前解释器旁边的 → 都找不到才退回 `start.bat` 并打一行警告
+- 新增 `--show`：把现有 `.lnk` 的 target / arguments / working_dir / icon 读回来打印。
+  「为什么双击跑的不是我想的那个 python」这类问题，一条命令就能定位
+
+### 20.1 为什么不用 pywin32，也不用自己拼 .lnk
+
+`win32com.client.Dispatch("WScript.Shell")` 要装 pywin32（10 MB），而**只为了建一个 600 字节的快捷方式**。
+新增的 `tools/win_shortcut.py` 用 `ctypes` 直接对着 COM 虚表调 `IShellLinkW` / `IPersistFile`，
+标准库就够，`requirements.txt` 一个字都不用加。
+
+为什么**不**自己按 MS-SHLLINK 手拼二进制：那个格式要求同时给出 `LinkTargetIDList` 和
+`LinkInfo`，少一个字段资源管理器就把快捷方式显示成「未知项目」。走系统 API 让 shell 自己
+生成，结构一定对。
+
+虚表下标是固定值，写死在模块里（`IShellLinkW`: 7 SetDescription / 9 SetWorkingDirectory /
+11 SetArguments / 15 SetShowCmd / 17 SetIconLocation / 20 SetPath；`IPersistFile`: 5 Load / 6 Save）。
+
+⛔ **三个 ctypes 上的坑**（都实际卡住过）：
+
+| 坑 | 现象 | 正解 |
+|---|---|---|
+| `HRESULT` 子类不能位运算 | `hr & 0xFFFFFFFF` 抛 `TypeError` | 先取 `.value` 再转 `int` |
+| `int(c_long)` 拿不到值 | 同上，`int(hr)` 也报错 | `int(getattr(hr, "value", hr))` |
+| **子类实例和 int 直接比较不可靠** | `CoCreateInstance` 明明 `S_OK`（值 0），`if hr != 0` 却判成不相等，误报失败 | 一律 `_v(hr) != S_OK`，先转 int 再比 |
+
+### 20.2 ⚠️ 验证「无控制台」不能用 bash 启动
+
+这是本轮最容易自我欺骗的一步。**从 bash 里 `./pythonw.exe run.py &` 启动，验证不出真实现象** ——
+进程继承了 bash 的 stdout/stderr 管道，`sys.stdout` 不是 `None`，`_ensure_streams` 走"有控制台"
+分支，`launch.log` 里会写**「控制台 有」**。看着"跑通了"，其实测的是另一条路。
+
+真双击时进程没有任何标准句柄。**正确做法是让 shell 替你启动**，也就是双击走的那条路：
+
+```python
+import ctypes
+ctypes.windll.shell32.ShellExecuteW(None, 'open', r'C:\...\AI提词器.lnk', None, None, 1)
+# 返回值 > 32 表示成功
+```
+
+实测（v2.2.4 源码版）：
+
+| 检查项 | 结果 |
+|---|---|
+| `ShellExecuteW` 返回值 | `42`（>32，成功） |
+| `data\launch.log` 第一行 | **`控制台 无（pythonw）`** ← 走对了分支 |
+| `/` | 200 |
+| `POST /api/quit` | `{"ok":true,"quitting":true}`，随后端口 000 |
+| 黑框 | 没有 |
+
+对照：bash 直接起 —— `launch.log` 写「控制台 **有**」，说明测的不是同一件事。
+
+### 20.3 顺带修掉两句过期文案
+
+`run.py` 里 `pythonw` 分支原本打印「要停止请在任务管理器结束 pythonw.exe」，
+另一处打印「要重启请先关掉旧窗口」—— 两句话都是 v2.2.3 之前的现实。
+现在停止是控制台右上角的「退出程序」，且 `pythonw` **没有窗口可关**，"关掉旧窗口"
+会让人满屏幕找一个不存在的窗口。已改为：
+
+- `后台运行：没有控制台窗口。停止请用控制台右上角的「退出程序」。`
+- `要重启：在控制台页面右上角点「退出程序」，然后再打开一次。`
+
+> 教训：**新增一个替代性机制（退出按钮）之后，要把所有描述旧机制的文字搜一遍。**
+> `grep -n "任务管理器" run.py app/*.py web/*.js` 一秒钟的事，拖了两版才发现。
+
+---
+
 ## 已知局限
 
 - 延迟数字来自公开资料与本机推算，**未实测**；R2 才有真实值。
@@ -2243,5 +2324,6 @@ MSYS_NO_PATHCONV=1 "dist\AI提词器-x.y.z-安装程序.exe" /VERYSILENT /NOREST
 > 版本线：v1.6 = R2 起飞版｜v1.7 = R3 对齐器｜v1.8 = 推进方式开关｜v1.9 = AI 跟随修复 + 稿件删除｜
 > v2.0 = 设置页 + 模型自动发现｜**v2.0.1 = 启动器修复（纯 ASCII bat + 依赖自检移入 run.py）**｜
 > v2.2 = 进度窗口搬出 Inno + 增量安装 + 暂停/继续｜v2.2.1 = 快捷方式启动修复（pythonw 的 sys.stdout 是 None）｜
-> v2.2.3 = 控制台「退出程序」｜**v2.2.4 = 安装时程序开着只提示一次，不再逐文件报错（当前）**。
+> v2.2.3 = 控制台「退出程序」｜**v2.2.4 = 安装时程序开着只提示一次，不再逐文件报错（当前）**｜
+> v2.2.4 补 = 源码版快捷方式改指 pythonw（不再弹黑框）+ `win_shortcut.py` 去掉 pywin32 依赖。
 > 范围再变就另开 v2.1 文件，不在本文件上打补丁——避免"一处是旧结论、一处是新结论"。

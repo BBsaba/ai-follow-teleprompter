@@ -311,7 +311,7 @@ def main() -> None:
 
     if _already_running(url):
         print(f"[提词器] {config.PORT} 端口上已有实例在跑，直接打开 {url}")
-        print("[提词器] 要重启请先关掉旧窗口。")
+        print("[提词器] 要重启：在控制台页面右上角点「退出程序」，然后再打开一次。")
         try:
             webbrowser.open(url)
         except Exception:
@@ -322,8 +322,9 @@ def main() -> None:
     print(f"[提词器] 控制台   {url}")
     print(f"[提词器] 提词窗   {url}prompter")
     if _HEADLESS:
-        # pythonw 没有窗口可关 —— 照抄「关掉本窗口」会让人到处找不到那个窗口
-        print("[提词器] 后台运行：没有控制台窗口，要停止请在任务管理器结束 pythonw.exe")
+        # pythonw 没有窗口可关 —— 照抄「关掉本窗口」会让人到处找不到那个窗口。
+        # 停止方式从 v2.2.3 起是控制台右上角的按钮，不再是去杀进程。
+        print("[提词器] 后台运行：没有控制台窗口。停止请用控制台右上角的「退出程序」。")
     else:
         print("[提词器] 关掉本窗口即停止服务。")
     threading.Thread(target=_open, args=(url,), daemon=True).start()
