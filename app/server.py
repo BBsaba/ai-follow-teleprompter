@@ -6,11 +6,11 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTasks, FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import audio, config, model_finder, store
+from . import audio, config, model_finder, shutdown, store
 from .listener import Listener
 from .session import Session
 
@@ -117,6 +117,25 @@ app.mount("/static", StaticFiles(directory=str(config.WEB_DIR)), name="static")
 
 
 # ---------------- 页面 ----------------
+def _app_version() -> str:
+    """版本号只有一个真源：安装目录里的 `VERSION.txt`（构建脚本写的）。
+
+    前端别再硬编码一份 —— 那样每次发版要记得改两处，迟早出现
+    「界面写着 2.2.2、实际装的是 2.2.3」这种对不上的情况。
+    源码目录里没有这个文件，就报 dev。
+    """
+    try:
+        first = (config.ROOT / "VERSION.txt").read_text(encoding="utf-8").splitlines()[0]
+        return first.split()[-1]            # "AITeleprompter 2.2.3" -> "2.2.3"
+    except Exception:
+        return "dev"
+
+
+@app.get("/api/version")
+async def api_version():
+    return {"version": _app_version()}
+
+
 @app.get("/")
 async def page_root():
     return FileResponse(config.WEB_DIR / "console.html")
@@ -355,6 +374,23 @@ async def api_asr_toggle():
 @app.post("/api/asr/selftest")
 async def api_asr_selftest():
     return await listener.selftest()
+
+
+# ---------------- 退出程序 ----------------
+@app.post("/api/quit")
+async def api_quit(background: BackgroundTasks):
+    """停掉服务和整个进程。
+
+    为什么需要这个接口：快捷方式用 `pythonw.exe` 启动，**没有控制台窗口**，
+    用户关掉浏览器标签页之后服务还在后台跑，想停只能去任务管理器里找
+    `pythonw.exe` 结束掉 —— 那不是正常用户该做的事。这个按钮替掉那一步。
+
+    ⚠️ 用 BackgroundTasks 而不是直接调：Starlette 保证后台任务在**响应发完
+    之后**才跑。早先直接调过一次，实测服务退得太快，连接被掐断，浏览器只拿到
+    一个网络错误 —— 用户点完按钮看到「出错了」，还以为没退成功。
+    """
+    background.add_task(shutdown.request_quit)
+    return {"ok": True, "quitting": True}
 
 
 # ---------------- WebSocket ----------------

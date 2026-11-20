@@ -8,7 +8,7 @@
 </head>
 <body>
   <header>
-    <span class="brand">提词器 <em>v2.0</em></span>
+    <span class="brand">提词器 <em id="verTag"></em></span>
     <select id="scripts" title="稿件"></select>
     <button id="btnNew">新建</button>
     <button id="btnImport">导入</button>
@@ -19,6 +19,7 @@
     <span id="modeTag" class="tag">待机</span>
     <button id="btnSettings" title="麦克风、模型与推理设置">设置</button>
     <button id="btnPrompter" class="primary">打开提词窗</button>
+    <button id="btnQuit" class="danger" title="停止服务并退出程序">退出程序</button>
   </header>
 
   <main>
@@ -74,6 +75,17 @@
       </div>
     </aside>
   </main>
+
+  <!-- 退出后盖住整个界面。这时所有接口都没了，留一堆点不动的按钮只会让人
+       以为是卡住；不如明说"已经关了、去哪儿再打开"。 -->
+  <div id="quitScreen" hidden>
+    <div class="quit-card">
+      <h2>提词器已退出</h2>
+      <p class="quit-main">服务已经停了，这个浏览器标签页可以关掉。</p>
+      <p class="quit-sub">下次要用：双击桌面上的「AI 提词器」。</p>
+      <p id="quitWarn" class="quit-warn" hidden></p>
+    </div>
+  </div>
 
   <script src="/static/console.js"></script>
 </body>

@@ -51,6 +51,10 @@ button {
 button:hover { background: #262B33; }
 button.primary { background: #2F6BFF; border-color: #2F6BFF; color: #fff; }
 button.primary:hover { background: #3D77FF; }
+/* 「退出程序」是唯一会真的把服务停掉的按钮，配色必须和旁边那些分开。
+   它和「打开提词窗」只隔十来像素，长得一样迟早会被误点。 */
+button.danger { border-color: #4A262A; color: #E5676B; }
+button.danger:hover { background: #2A1618; border-color: #6B2F35; color: #FF8A8E; }
 button:disabled { opacity: .45; cursor: not-allowed; }
 button.wide { flex: 1; }
 
@@ -324,3 +328,47 @@ input[type="range"]::-webkit-slider-thumb {
   color: #5C6470;
   line-height: 1.6;
 }
+
+/* ---------- 退出后的遮罩 ----------
+   服务停掉之后这个页面里所有接口都没了。留着界面不改，用户会去点按钮，
+   点了没反应又像"卡死"；所以直接盖住，并说清楚去哪儿重新打开。 */
+#quitScreen {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  background: rgba(10, 12, 15, .93);
+}
+#quitScreen[hidden] { display: none; }
+
+.quit-card {
+  max-width: 430px;
+  padding: 28px 32px;
+  border: 1px solid #262A31;
+  border-radius: 14px;
+  background: #171A1F;
+  text-align: center;
+}
+.quit-card h2 {
+  margin: 0 0 12px;
+  font-size: 18px;
+  font-weight: 600;
+  color: #E6E8EC;
+}
+.quit-main { margin: 0; color: #B7BEC8; }
+.quit-sub { margin: 14px 0 0; font-size: 13px; color: #6B7280; }
+
+.quit-warn {
+  margin: 16px 0 0;
+  padding: 10px 12px;
+  border: 1px solid #3E2C10;
+  border-radius: 8px;
+  background: #1A1408;
+  color: #D29922;
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: left;
+  white-space: pre-line;
+}
+.quit-warn[hidden] { display: none; }

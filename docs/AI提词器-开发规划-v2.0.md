@@ -1402,6 +1402,789 @@ torch 的 CUDA 版**只能**从 `https://download.pytorch.org/whl/cu126` 拿，�
 
 ---
 
+## 17. 发版流程（v2.0.1 起）
+
+### 17.1 什么时候算一个版本
+
+改完代码 → 本地 `python tests/run_all.py` 265 项全过 → push 后 CI 绿 → 可以发版。
+
+补丁号（2.0.**x**）修 bug，次版本号（2.**x**.0）加功能。
+
+### 17.2 四条命令
+
+```bash
+cd /d/AITeleprompter
+git add -A && git commit -m "说明这次改了什么"
+git push
+git tag -a v2.0.2 -m "v2.0.2"
+git push origin v2.0.2
+```
+
+tag 用**附注标签**（`-a`），不用轻量标签 —— 附注标签带作者、日期和说明，
+`git describe` 也认得更准。
+
+### 17.3 在网页建 Release
+
+1. 打开 `https://github.com/BBsaba/ai-follow-teleprompter/releases/new`
+2. **Choose a tag** 选刚推的那个（会显示 `Existing tag`）
+   ⚠️ 不要点 "Create new tag"，tag 已经有了
+3. 填标题和说明，点 **Publish release**
+
+说明页至少要写清三件事：
+
+- **这是什么**（一句话）
+- **怎么装**（`setup.bat` → `start.bat`，两步）
+- **zip 里不含模型**（1.8 GB 超限，靠 setup.bat 下）
+
+第三点最容易漏，漏了下载者会以为解压就能用，然后卡在「依赖没装齐」。
+
+### 17.4 为什么 Release 的 zip 不含模型
+
+GitHub 对**单个文件**限制 100 MB。`models/Qwen3-ASR-0.6B/model.safetensors`
+一个文件就是 1.75 GB，必然超限。
+
+所以 `.gitignore` 排除 `models/`，靠 `setup.bat` 调 `tools/download_model.py`
+首次下载。这个取舍是**故意的**，不是打包失误。
+
+### 17.5 Release 附件放什么
+
+**什么都不用放**。GitHub 会为每个 tag 自动生成 `Source code (zip)` 和
+`Source code (tar.gz)`，内容就是该 commit 的完整快照，够用。
+
+想额外给「带模型的离线包」，用 `python tools/package.py --with-model`
+打 1.8 GB 的 zip，但它贴着 GitHub Release **单文件 2 GB** 的红线，
+上传又慢又容易断。**建议放网盘，不放 Release 附件。**
+
+### 17.6 发版后验三件事
+
+| 检查项 | 怎么看 |
+|---|---|
+| tag 指向对不对 | Releases 页面上那个 commit 短哈希和时间 |
+| CI 绿不绿 | Actions 页面最近一次运行 |
+| 源码包能下不 | 点一下 `Source code (zip)` 试试 |
+
+---
+
+## 18. 安装包：一个 13 MB 的 exe，替用户把命令行跑完（v2.1）
+
+用户的原话是「**弄一个安装脚本程序，能够有一个小窗口让用户选择一些选项，然后这个小程序代替用户手动敲命令行的动作**」「**整体文件大小肯定是越小越好，好几个 G 有点夸张了**」。
+
+这两句决定了整个架构：**安装包里不装货物，只装安装逻辑**。
+
+### 18.1 为什么不是 PyInstaller，也不是「打个 1 GB 的大包」
+
+| 方案 | 安装包体积 | 致命问题 |
+|---|---|---|
+| PyInstaller 冻结整个 torch | 1.5 GB+ | torch 的 CUDA DLL 有 30 多个、合计 3.6 GB，靠 hook 猜依赖**必漏**，装到别人机器上就是运行时 DLL 找不到 |
+| Inno 里塞满 wheel（离线安装） | 1.0 GB | 用户要下 1 GB 才能开始装，而其中 2/3 是他可能用不上的 CUDA |
+| **Inno + 官方 embeddable Python + 联网装依赖** | **13 MB** | 安装时要联网（这是刻意的取舍） |
+
+最终结构：
+
+```
+AI提词器-2.1.0-安装程序.exe    13.0 MB   ← 用户下载这个
+└─ 解开后
+   python\      31.8 MB   官方 Python 3.13.15 embeddable + 预装好的 pip
+   app\ web\ assets\       214 KB  项目代码
+   run.py requirements.txt start.bat LICENSE README.md
+```
+
+压缩比 40.5%（31.8 MB + 0.2 MB → 13.0 MB，LZMA2/max）。
+
+### 18.2 一条命令构建
+
+```bash
+python tools/build_installer.py              # 版本号默认 2.1.1
+python tools/build_installer.py -v 2.2.0     # 指定版本
+python tools/build_installer.py --skip-runtime   # 只改了代码时用，跳过重装 pip（省 40 秒）
+python tools/build_installer.py --clean      # 清掉 build/ 重来
+```
+
+构建机要求：Windows x64 + [Inno Setup 7](https://jrsoftware.org/isdl.php)（免费）。ISCC 不在默认路径就用 `--iscc` 指过去。
+
+产物落 `dist/`。`build/` 是中间产物（下载缓存 + payload），已进 `.gitignore`。
+
+### 18.3 安装时到底发生了什么
+
+```
+欢迎 → 许可(AGPL) → 安装位置 → 选择运行方式(显卡/CPU) → 附加任务(桌面图标/下模型) → 开始安装
+                                                                                    ↓
+                                          解压 13 MB 文件（几秒，进度条这时就满了）
+                                                                                    ↓
+  ┌─ 进度条重置为 0，下面三步分别占 0–60 / 60–92 / 92–100 ─────────────────────────┐
+  │                                                                                │
+  │  pip_progress.py --mode torch   下 torch wheel 2.6 GB，再离线装                 │
+  │  pip_progress.py --mode pip     -r requirements.txt（USTC 镜像）                │
+  │  python -c "import numpy, sounddevice, pypinyin, fastapi, uvicorn, websockets"  │
+  │  download_model.py --status …   模型 1.8 GB（勾了才跑）                          │
+  │                                                                                │
+  └────────────────────────────────────────────────────────────────────────────────┘
+                                                                                    ↓
+                                                                              完成页 → 启动
+```
+
+**进度条是连续的一条**：解压完先归零，之后每一步都在它那一段里往前走，状态栏同步显示「已下 / 总量 / 速度 / 剩余时间」。机制见 §18.5。
+
+每一步的详细输出都写进 `{安装目录}\install.log`（由 pip 的 `--log` 参数写，不是 shell 重定向）。
+
+装到 `%LOCALAPPDATA%\Programs\AITeleprompter`，**不需要管理员权限**；安装位置页可以改成任何目录（纯英文路径最稳）。
+
+### 18.4 ⛔ 十一个坑，全是实测踩出来的
+
+#### 坑 1：embed 的 `._pth` 会让 `import app` 直接失败
+
+`python-3.13.15-embed-amd64.zip` 解压后有个 `python313._pth`。这个文件一旦存在，Python 就进入**隔离模式**：
+
+- 只认 `._pth` 里列的路径
+- **连「脚本所在目录自动进 `sys.path`」这条普通规则都取消**
+
+于是 `python run.py` 报 `ModuleNotFoundError: No module named 'app'` —— 而同一份代码在开发目录里跑得好好的。
+
+修法：`._pth` 里加一行 `..`（`python.exe` 在 `<安装目录>\python\`，所以 `..` 就是项目根）。
+
+```
+python313.zip
+.
+Lib\site-packages
+..
+import site
+```
+
+**但这条修法会被「复用 payload」偷走** —— 见坑 9。
+
+#### 坑 2：`requirements.txt` 漏了 `websockets`，AI 跟随整个失效
+
+`uvicorn` 裸装**不带** ws 协议实现。没有它，uvicorn 只打一行
+
+```
+WARNING: No supported WebSocket library detected.
+```
+
+然后页面照常打开、字照常显示，但**红线和文字一动不动** —— 症状极像「程序坏了」，其实是少一个包。
+
+`app/server.py` 的 `/ws` 是唯一的推进通道（`web/prompter.js` 里只有 `new WebSocket(...)`，没有轮询兜底），所以这个包是**必需**的，只是开发机的 `.venv` 里恰好有，一直没暴露。
+
+已修：`requirements.txt` 的 R1 段加 `websockets>=12`，自检命令也把它算进必需包。
+
+#### 坑 3：`PrepareToInstall` 里检查文件，必然失败
+
+Inno 的执行顺序是：
+
+```
+ssInstall（PrepareToInstall 在这里返回）
+  → 复制文件（[Files]/[Dirs]/[Icons]）
+  → ssPostInstall（这里才能动文件）
+  → [Run]
+```
+
+第一版把 `if not FileExists(python.exe) then 报错` 写在 `PrepareToInstall` 里 —— 那一刻目录还是空的，`FileExists` 必然 False，于是：
+
+> 用户在选项页全部顺利通过，一点「安装」立刻失败，而且目标目录**压根没建出来**，连 `install.log` 都没有。
+
+⛔ **`PrepareToInstall` 里只能算路径，不要检查文件、不要写日志。** 这些全挪到 `ssPostInstall`。
+
+#### 坑 4：Pascal 注释里不能出现 `{app}` 和 `[Run]`
+
+Inno 的 `[Code]` 段是 Pascal：
+
+- `{ ... }` 是注释。注释里写 `{app}`，那个 `}` 会把注释**提前截断**，剩下的文字变成代码 → `Syntax error`，而且行号指向注释中间，完全看不出是注释的问题
+- `[Run]` 这种方括号**即使在注释里也会被当成段标签** → `Invalid section tag`
+
+⛔ 注释里要提到安装目录就写「安装目录」，要提段名就写「Run 段」。
+
+`installer/check_iss_comments.py` 专门扫这个，构建前跑一下。
+
+#### 坑 5：`cmd /c` 的三层引号，失败了连日志都是空的
+
+原本想用 `cmd /c ""python.exe" -m pip ... >> "install.log" 2>&1"` 把 pip 输出重定向进日志。这种串只要错一个字符就**静默失效**：退出码 1、日志是空文件、没有任何错误信息。
+
+修法：**根本不碰 cmd**。pip 自带 `--log <file>`，日志交给 pip 自己写，一个引号都不用管。
+
+```pascal
+Exec(PythonExe, Args + ' --log "' + LogPath + '"', AppDir, SW_HIDE, ewWaitUntilTerminated, RC)
+```
+
+注意 `python -c "..."` 和 `download_model.py` 不认 pip 的参数，走另一个不带 `--log` 的函数。
+
+#### 坑 6：`Format` 的数组参数换行顶格写，会被当成段标签
+
+```pascal
+Args := Format('--mode %s --status "%s"',
+               [AMode, StatusFile]);        { ← 行首这个 [ 是段标签 }
+```
+
+ISCC 报 `Invalid section tag`，行号指向这一行的中间，看上去和数组毫无关系。同理，**注释里**写 `[Run]`、`[Setup]` 也会被当段标签（坑 4 的另一半）。
+
+修法：把格式串先赋给一个变量，`Format` 那行不换行；或者把 `[` 留在行尾。
+
+```pascal
+Fmt  := '--mode %s --status "%s" ...';
+Args := Format(Fmt, [AMode, StatusFile, ...]);
+```
+
+#### 坑 7：`Mode`、`Label`、`Stage`、`Text` 是保留字
+
+写成 `function RunStage(const Mode, Label: String)` 直接 `Identifier expected`。
+
+改名表：`Mode→AMode`、`Label→ALabel`、`Stage→AStage`、`Text→AText`。
+
+#### 坑 8：`LoadStringFromFile` 要 `AnsiString`，`SplitString` 根本不存在
+
+```pascal
+var S: String;  F: AnsiString;
+LoadStringFromFile(StatusFile, F);      { ✅ }
+LoadStringFromFile(StatusFile, S);      { ❌ Type mismatch }
+```
+
+读一行文件最省事的写法是 `LoadStringsFromFile(StatusFile, Lines)` + `Lines[0]`（`TArrayOfString` 接受 Unicode）。切字段也别指望 `SplitString`——Inno 7 里它不接受 `TArrayOfString`，各版本签名还不统一，**手写十行 `Field()` 最省心**（见 `.iss` 里那段）。
+
+#### 坑 9：装得上 ≠ 跑得起来 —— `--skip-runtime` 会把旧 payload 的毛病一起复用
+
+这是**唯一一个到了用户手上才被发现**的坑，也是最贵的一个。
+
+时间线：
+
+1. 最早某次构建，`._pth` 还没加 `..`（坑 1 尚未修）
+2. 坑 1 修好后，`prepare_runtime()` 里写的是对的
+3. 但后面十几次调试性构建都加了 `--skip-runtime` —— **复用 `build/payload/python`，`prepare_runtime()` 根本没执行**
+4. 于是那台「旧的、坏的」运行时被一遍遍打进安装包
+5. 用户装完：安装日志漂漂亮亮，`site-packages` 5.2 GB，九个包全部 OK，日志停在 `[退出码 0]`
+6. 点开程序：`ModuleNotFoundError: No module named 'app'`，窗口一闪就没了
+
+**没有任何日志会说谎** —— 装包确实成功了。出问题的是「装完之后要执行的那份运行时」，而这一点在安装阶段完全不会暴露：pip 是从外面调进来的，它靠自己的 site 机制工作，不需要 `import app`。
+
+两个防线现在都补上了（`tools/build_installer.py`）：
+
+```python
+# 1) 复用旧 payload 时也重写/核对 ._pth
+if args.skip_runtime and (PAYLOAD / "python" / "python.exe").is_file():
+    print("  跳过（--skip-runtime，复用现有 python/）")
+    write_pth(PAYLOAD / "python")        # ← 幂等：已正确就只说一句
+
+# 2) 编译前用 payload 自己跑一次 import，跑不通直接 SystemExit
+def smoke_project_import() -> None:
+    probe = PAYLOAD / "_import_probe.py"
+    probe.write_text("OK = True\n", encoding="utf-8")
+    ...  # 起子进程 import 它，探针跑完删掉，不进安装包
+```
+
+第 2 条是重点：**它是唯一能在构建阶段复现「用户点开程序」这件事的检查**。`import app` 依赖 fastapi 等第三方包、payload 里没有，所以用探针模块代替 —— 验的是「同目录进不进 `sys.path`」这一件具体的事。
+
+教训一句话：**复用中间产物时，凡是「曾被修过」的地方都要重新校验，不能因为「上次跑对了」就跳过。**
+
+#### 坑 10：`shellexec` 打开日志，「窗口闪一下就没了」
+
+完成页那个「查看安装日志」原本这么写：
+
+```pascal
+Filename: "{app}\install.log"; Flags: postinstall shellexec skipifsilent unchecked
+```
+
+`shellexec` 走**系统文件关联** —— `.log` 在用户机器上关联到哪个程序，完全不可控。实测表现是点「完成」后一个窗口闪一下消失，用户什么都没看成，还以为安装失败了。
+
+改成点名打开，并且**打开的不是 30 MB 的原始日志**：
+
+```pascal
+Filename: "{sys}\notepad.exe"; Parameters: """{app}\install-result.txt""";
+    Description: "查看安装结果"; Flags: postinstall nowait skipifsilent unchecked
+```
+
+三点都要：
+
+1. **`{sys}\notepad.exe` 写死**，不走关联，结果可预期
+2. **`nowait`**：记事本是独立进程，安装器退出不该把它带走
+3. **打开摘要而不是 `install.log`**：那份日志 34 MB，全是 pip 的下载链接，用户翻到眼花也看不出「到底成没成」
+
+摘要 `install-result.txt` 由 `WriteResultFile` 在 `ssPostInstall` 末尾生成，几百字节：
+
+```
+AI 提词器  安装结果
+==============================================
+版本      2.1.2
+安装目录  D:\text\AITeleprompter
+时间      2026-11-19 18:20:57
+
+运行环境  成功（fastapi / uvicorn / websockets / numpy / sounddevice / pypinyin 全部就位）
+PyTorch   显卡加速版（CUDA 12.6）
+模型      已下载完成（1.8 GB）
+
+结论      安装成功，双击桌面图标就能用。
+
+完整日志  D:\text\AITeleprompter\install.log
+```
+
+⚠️ 两份文件的编码规则**相反**，别搞混：
+
+| 文件 | 写法 | 编码 | 理由 |
+|---|---|---|---|
+| `install.log` | `Log()` → `SaveStringToFile` | **只能 ASCII** | pip 的 `--log` 往里追加 UTF-8，混排会一半乱码 |
+| `install-result.txt` | `WriteResultFile` → `SaveStringToFile` | GBK，可写中文 | 单独一份文件，不混 |
+
+#### 坑 11：升级安装时，「选择安装位置」那一页会凭空消失
+
+用户反馈：第一次装能看到选目录，装 2.1.2 时这页没了，直接跳过去。
+
+原因是 Inno 6 起 `DisableDirPage` 的默认值改成了 **auto**：
+
+> auto: Setup hides the Select Destination Location page if a previous version of the same application is already installed.
+
+也就是说——**只要检测到同 AppId 的旧版本，就把选目录页藏掉**。第一次装（没有旧版本）正常，升级装就消失。开发者本地很难复现，因为测试机通常已经装过。
+
+修法一行：
+
+```ini
+DisableDirPage=no
+```
+
+顺带把那一页的说明也改了（`[Messages]` 段），因为换目录的代价不是「挪文件」而是「重新下载」：
+
+```ini
+[Messages]
+zhcn.SelectDirDesc=装到哪个文件夹由你决定。沿用上次的目录会复用已下载的依赖；换到新目录需要重新下载（显卡版约 2.6 GB，仅 CPU 约 240 MB）。
+```
+
+⚠️ `[Messages]` 的键名必须带语言前缀（本项目是 `zhcn.`），写错 Inno 会警告 `Message name not found`——所以**编译时不能忽略警告**，这次就是靠「零警告」确认键名对的。
+
+### 18.5 真实进度：状态文件 + 每秒轮询
+
+**不要**用 `CreateOutputProgressPage`。它是给**自定义向导流程**（在 `NextButtonClick` 里 Show/Hide）设计的，在「安装进行中」阶段强行切页风险大。
+
+真正的问题是：**Inno 的 `Exec` 只拿得到退出码，读不到子进程的 stdout**；而 pip 的进度条一旦输出被重定向（不是真终端），就退化成「下完才写一行」。所以装 2.6 GB 的过程中界面一动不动 —— 用户实测的截图就是这样：进度条满格，状态栏停在一句话上十几分钟。
+
+解决办法是让子进程把进度**写进一个文件**，Pascal 这边每秒读一次。
+
+**协议**：`阶段|百分比|文字`，一行。
+
+| 阶段 | 含义 |
+|---|---|
+| `LOOKUP` | 正在查版本 / 抓 wheel 链接 |
+| `DOWNLOAD` | 正在下载，文字里带「已下 / 总量 / 速度 / 剩余」 |
+| `INSTALL` | 正在解压安装 |
+| `DONE` | 这一步成功，Pascal 继续往下走 |
+| `FAIL` | 这一步失败，Pascal 中止 |
+
+**两个 helper**（都在 `tools/`，都随安装包装进安装目录）：
+
+| 脚本 | 管什么 | 关键参数 |
+|---|---|---|
+| `pip_progress.py` | 下 torch wheel、跑 pip 装其余依赖 | `--mode torch\|pip --status S --log L --tmp T --lo N --hi M` |
+| `download_model.py` | 下 1.8 GB 模型权重 | `--status S --lo N --hi M` |
+
+`--lo/--hi` 是这个阶段在总进度条上占的区间，所以进度条是**一条连续的线**：torch 0–60、其余依赖 60–92、模型 92–100。
+
+**Pascal 侧**只有一个函数 `RunTracked(AParams, ALabel, var RC)`，`RunStage` 是给它拼参数的一层薄壳。轮询循环里四个要点：
+
+```pascal
+repeat
+  WaitTick;                                    { 见下：不能用 Sleep }
+  if LoadStringsFromFile(StatusFile, Lines) then
+  begin
+    AStage := Field(Lines[0], '|', 0);
+    Pct    := StrToIntDef(Field(Lines[0], '|', 1), 0);
+    if AStage = 'DONE' then begin RC := 0; Result := True; Exit; end;
+    if AStage = 'FAIL' then begin RC := 1; Exit; end;
+    if Pct > WizardForm.ProgressGauge.Position then   { 只许往前走 }
+      WizardForm.ProgressGauge.Position := Pct;
+    SetStatus(Field(Lines[0], '|', 2));
+  end;
+  ...
+until False;
+```
+
+1. **`WaitTick` 用 `ping -n 2 127.0.0.1`，不能用 `Sleep`。** `Sleep` 期间不处理消息队列，窗口会变「未响应」；`Exec` 返回时会处理一遍消息，界面就活了。
+2. **进度只许前进。** 多个阶段共用一个进度条，后退比不动更让人怀疑。
+3. **卡死判定分两级。** 状态文件 30 秒没出现 → 助手根本没起来，立刻报错；有文件但进度 20 分钟没变 → 认为卡死。总上限 3 小时。
+4. **开工前 `DeleteFile(StatusFile)`。** 否则上一阶段的 `DONE` 还在，新阶段一进去就被判成功。
+
+**实测证据**（安装布局下真跑，中途 kill）：
+
+```
+DOWNLOAD|93|正在下载语音识别模型（1.8 GB）  200.7 MB / 1.8 GB  26.5 MB/s  剩 1:00
+```
+
+93% 是 200.7/1843 映射到 92–100 区间后的值，不是写死的。
+
+**一个副作用值得知道**：`pip_progress.py` 抓 wheel 直链（先用 urllib 拉索引页正则挑 URL）比 `pip install torch==X --index-url ...` 快得多 —— 后者实测在「逐条比对几千个 wheel 的平台标签」上花了 **5 分钟**（17:02:38→17:07:50 全在 `Skipping link: none of the wheels tags ... compatible`），直链只要 1.3 秒。
+
+### 18.6 卸载行为
+
+- 程序文件和 `python\Lib\site-packages` 里的依赖：直接删
+- `_tmp\`（下载缓存、进度文件）：直接删
+- `install.log`、`install-result.txt`：显式 `DeleteFile` —— 它俩不在 `[Files]` 里，
+  不删就会在卸载后孤零零留在目录里
+- `data\`（稿子、界面设置）：**弹框问**，默认不删
+- `models\`（1.8 GB）：**弹框问**，默认不删
+
+### 18.7 安装包不该进 git
+
+`dist/` 和 `build/` 都在 `.gitignore` 里。13 MB 的 exe 上传到 GitHub Release，不进仓库。
+
+### 18.8 想验证「进度是真的」，得装到空目录
+
+`site-packages` 和 `models\` 都在安装目录里、不在 `[Files]` 里。**重装到同一个目录**时 Inno 只覆盖那 13 MB 程序文件，依赖和模型原封不动 —— pip 一看「已满足」就跳过，模型脚本一看「文件都在」就秒写 `DONE`。
+
+于是界面表现是：进度条唰一下到头，什么都没下载。**这不是进度条坏了，是确实没东西可下。**
+
+验证进度显示的正确姿势：选一个**空目录**（`D:\text\AITeleprompter-test` 之类），或者干脆先选「仅用 CPU」—— 只下 240 MB，一分钟内就能看到速度、剩余时间在跳，验证完把测试目录删掉即可。真要用显卡版再装回原目录。
+
+### 18.9 装完怎么确认「真的能开」（30 秒，不看日志）
+
+安装日志只能证明包下载成功，证明不了程序能起来（坑 9 就是这么漏过去的）。真正要看的是：
+
+```bat
+cd <安装目录>
+python\python.exe -c "import sys; print(sys.path)"
+```
+
+这条命令不依赖任何第三方包。**输出里必须有安装目录本身**（`D:\text\AITeleprompter`），没有就是 `._pth` 少了 `..`。
+
+```bat
+python\python.exe run.py
+```
+
+能起来就会打印地址并打开浏览器。
+
+如果双击图标**窗口闪一下就没了**，说明 Python 的报错被启动脚本吞了 —— 用开始菜单里的**「排查启动（带命令行窗口）」**，同样的启动流程，但报错留在窗口里。
+
+### 18.10 双击 `run.py` 也能用：启动时自愈
+
+`.py` 在 Windows 上关联给 **py.exe 启动器**，它按 PATH / 注册表挑系统里装的 Python。用户刚用安装包装好，双击 `run.py` 得到的是：
+
+```
+[提词器] 依赖没装齐，服务起不来。缺这几样： sounddevice、pypinyin、fastapi…
+[提词器] 现在用的是： C:\Users\…\Programs\Python\Python313\python.exe
+```
+
+然后一屏「去建 venv」的教程。**这在逻辑上是错的** —— 依赖明明装好了，只是装在 `<安装目录>\python\` 里，而启动器挑的是另一个解释器。
+
+修法是在 `run.py` 开头加一段自愈（`_reexec_with_bundled_python`）：
+
+```python
+own = Path(__file__).resolve().parent / "python" / "python.exe"
+if own.is_file() and Path(sys.executable).resolve().parent != own.parent:
+    raise SystemExit(subprocess.call([str(own), __file__], env={..., "AITP_REEXEC": "1"}))
+```
+
+四个细节，每个都对应一个真会踩的坑：
+
+| 细节 | 不这么做会怎样 |
+|---|---|
+| 比**目录**不比文件名 | 桌面快捷方式用的是 `pythonw.exe`（无控制台），比文件名会把它误判成「需要重启」 |
+| `AITP_REEXEC` 环境标记 | 自带运行时万一也认为「不对」就无限重启 |
+| `subprocess.call` 而非 `os.exec*` | Windows 上 `exec*` 和 POSIX 差得远；用 call 还能把退出码原样带出去 |
+| 找不到自带运行时（源码目录）直接 `return` | 开发时在仓库里跑 `run.py` 会被跳去 `build/payload` 的运行时 |
+
+效果（实测，用系统 Python 模拟双击）：
+
+```
+[提词器] 改用自带运行时：D:\text\AITeleprompter\python\python.exe
+[提词器] 控制台   http://127.0.0.1:8756/
+[提词器] 提词窗   http://127.0.0.1:8756/prompter
+```
+
+顺带把「依赖没装齐」的提示分了岔：**安装版不再教用户建 venv**（他没有源码），改成「重新运行安装程序」；只有源码目录才显示 venv 那三条。
+
+### 18.11 卸载到底删什么（怕删到源码时的核查方法）
+
+卸载程序看着吓人，其实它的删除范围完全由 `unins000.dat` 里的记录决定。**直接读它**比猜可靠：
+
+```python
+dat = Path(r"D:\text\AITeleprompter\unins000.dat").read_bytes()
+text = dat.decode("utf-16-le", errors="ignore")          # 路径以 UTF-16LE 存
+paths = set(re.findall(r"[A-Za-z]:\\[^\x00\"<>|\r\n]{3,200}", text))
+```
+
+实测结果（v2.1.0 装完后）：
+
+| 位置 | 条数 | 说明 |
+|---|---|---|
+| `D:\text\AITeleprompter\…` | 1144 | 程序文件 + `python\` 运行时 |
+| `C:\ProgramData\Microsoft\…Start Menu\…` | 7 | 开始菜单快捷方式 |
+| `C:\Users\Public\Desktop\…` | 2 | 公共桌面快捷方式 |
+| **源码仓库 `D:\AITeleprompter`** | **0** | 一条都没有 |
+
+所以「卸载会不会删掉我的源码」的答案取决于**安装目录和源码目录是不是同一个**。这个项目的约定是：源码在 `D:\AITeleprompter`（git 仓库，带 `build/`、`installer/`、`docs/`），装出来的程序在别处（`D:\text\AITeleprompter`），两者物理隔离，卸载互不影响。
+
+⚠️ 卸载时两个弹框的默认值都是**否**，别手快：
+
+- `data\` —— 你写的稿子和界面设置，删了不可恢复
+- `models\` —— 1.8 GB 权重，删了下次要重下
+
+保留 `models\` 的话，重装到同一目录可以直接复用（`download_model.py` 会跳过已完整的文件）。
+
+### 18.12 中途取消：为什么按钮会变灰，以及怎么让它真的停下来
+
+用户在下载 2.6 GB 的中途按「取消」，界面卡住不动，按钮变灰。
+
+**Inno 的取消机制有个前提**：它把取消按钮置灰、记下「用户要取消」，然后**等当前正在执行的 Pascal 代码把控制权交回来**才会真正中止。而我们的 `CurStepChanged(ssPostInstall)` 里是一个跑几十分钟的轮询循环 —— 从头到尾不让出控制权，于是：
+
+- 用户看到按钮灰了 → 以为在取消
+- 实际上下载还在继续，界面停在「正在安装」
+
+**第二个坑**：Inno 拿不到 `Exec` 起来的子进程 PID，安装器手上没有句柄可以杀。而按镜像名 `taskkill /IM python.exe` 会误伤用户自己开的 Python。
+
+所以取消要分两半：**Pascal 侧认信号，Python 侧收手**。
+
+**Pascal 侧**：两处配合。
+
+```pascal
+{ 安装阶段开头先明确打开一次。Inno 在某些阶段会把它留在灰的状态，
+  用户以为不让取消 —— 他反馈的就是这个。 }
+WizardForm.CancelButton.Enabled := True;
+
+{ 轮询循环里：按钮被置灰 = 用户确认了取消 }
+if (Ticks > 3) and (not WizardForm.CancelButton.Enabled) then
+begin
+  UserCancelled := True;
+  SaveStringToFile(CancelFile, 'cancel', False);   { 给 helper 的暗号 }
+  WaitTick; WaitTick; WaitTick;                    { 给它三秒收尾 }
+  Exit;
+end;
+```
+
+两个细节：
+
+- **前 3 秒不查**：刚进循环时按钮可能还没画出来，`Enabled` 是 False，会误判成「用户取消了」
+- **只在开头置 True**：用户点取消后 Inno 会置灰，那是信号，循环里再置 True 就把信号抹了
+
+取消时要**跳过后续的错误弹框**，否则用户主动取消还会看到「运行环境没装好」：
+
+```pascal
+if not DepsReady then
+begin
+  if UserCancelled then Exit;     { Inno 会回滚，别再添乱 }
+  MsgBox('运行环境没装好：' + FailReason, ...);
+end;
+```
+
+**Python 侧**：两个 helper 都加了 `--cancel <文件>`，每 0.3 秒看一眼这个文件在不在。
+
+```python
+def cancelled() -> bool:
+    return CANCEL_FILE is not None and CANCEL_FILE.exists()
+```
+
+- `download_model.py` 在下载循环里检查，命中就抛 `_Cancelled` 收工
+- `pip_progress.py` 在下载循环里检查，在 pip 子进程循环里检查（命中就 `proc.kill()`——用 kill 不用 terminate，Windows 上 terminate 只是 `WM_CLOSE`，控制台程序经常收不到）
+
+实测（下载模型 5 秒后创建取消文件）：
+
+```
+FAIL|0|正在下载语音识别模型已取消
+已下 64K（只下了两个小文件就停了）
+```
+
+**取消之后会留下什么**（用户该知道，不然会以为没卸干净）：
+
+| 内容 | 取消后 | 说明 |
+|---|---|---|
+| 那 13 MB 程序文件 | Inno 回滚删除 | 正常 |
+| `python\Lib\site-packages`（几 GB） | **保留** | pip 装的，不在 `[Files]` 里，Inno 不知道它们 |
+| `models\`（1.8 GB） | **保留** | 同上 |
+| `_tmp\cancel.flag`、半截 wheel | 残留 | 下次安装会被覆盖/忽略 |
+
+这是好事：下次重装到同一目录，依赖和模型直接复用，不用重下几个 GB。
+
+### 18.13 把长任务搬出 Inno 的窗口（v2.2.0，推翻 18.12 的做法）
+
+18.12 那套「Pascal 认按钮信号」在真机上**不成立**。用户装上 2.1.3 之后反馈：
+
+> 取消按钮的颜色对了，但是还是点不动，右上角的最小化以及关闭按钮也是没有交互反应
+
+不是颜色没置对，是**整个窗口死了**。最小化、✕、取消，三个全都没反应 —— 这个现象本身就是决定性证据：只有 **输入消息** 进不来才会这样。
+
+**真正的原因**：Inno 在执行 Pascal Script 时不派发输入消息。Pascal 代码跑在 Inno 主线程里，`while` 循环不返回，Windows 的鼠标/标题栏消息就堆在队列里没人取。
+
+那为什么用户看到「进度条在动、文字在变」？因为 `SetStatus` 里调了 `Label.Update` —— 那是**同步重绘**（`UpdateWindow`），只处理 `WM_PAINT`。于是界面「看起来活着」，但一个点击都收不到。这也解释了为什么 18.12 的自测「5 秒后取消成功」是假的：那次是我手写了个 `cancel.flag` 文件，只验证了 Python 侧，没验证按钮。
+
+⚠️ **判断窗口是不是真的活着**，别看它有没有在刷新，看它响不响应 `WM_NULL`（`IsHungAppWindow` / `SendMessageTimeout` + `SMTO_ABORTIFHUNG`）。`Update` 出来的刷新会骗人。
+
+**新分工**（`DisableDirPage` 那些页面设置不变）：
+
+| 层 | 谁 | 干什么 |
+|---|---|---|
+| 页面 + 复制文件 | Inno（`installer\AI提词器.iss`） | 收目录/组件/任务，铺 13 MB 文件，然后**把向导藏起来** |
+| 进度窗口 | `tools\prep-ui.ps1`（PowerShell + WinForms） | 独立进程、独立消息循环 —— 最小化/关闭/暂停/取消全是真的能用 |
+| 干活 | `pip_progress.py` / `download_model.py` | 下 wheel、跑 pip、下模型，把 `STAGE\|pct\|文字` 写进 `_tmp\progress.txt` |
+| 体检 | `tools\check_env.py --json` | 报 torch 版本 / CUDA / 缺哪些包 / 模型在不在 |
+
+Inno 只做一件事：`Exec(powershell -File prep-ui.ps1 ...)` 阻塞等着，然后读 `_tmp\prep-result.txt` 的三行 ASCII（`state=` / `stage=` / `code=`）。中文一句话都不回传 —— Inno 的 `LoadStringsFromFile` 拿 `AnsiString`，中文必乱码。
+
+**退出码契约**（三处必须一致：iss、ps1、两个 py）：`0 成功 / 3 取消 / 4 失败或暂停`。
+
+两个只有真跑才会发现的坑：
+
+1. **`-WindowStyle Hidden` 会把 WinForms 窗口一起藏掉**。Windows 规定进程的第一次 `ShowWindow` 忽略参数、改用启动信息里的值，而 Inno 用 `SW_HIDE` 启动我们 —— 表现是「脚本跑了，窗口不出现」。修法：在 `Add_Shown` 里显式 `ShowWindow(hwnd, SW_SHOW)` + `SetForegroundWindow`。
+2. **`.ps1` 必须是 UTF-8 带 BOM**。PowerShell 5.1 读不带 BOM 的 UTF-8 会按 ANSI 解，中文注释里的一个字符就能把后面的引号吃掉，报的错还指在几十行之外（`MissingEndCurlyBrace`）。构建脚本里写死 `encoding="utf-8-sig"`。
+
+**增量安装**（避免「取消一次就白下 2.6 GB」）：
+
+- `check_env.py` 先体检，已满足的步骤**整段跳过**：torch 版本对了就不再下；六个必需包 + 四个 ASR 包齐了就不再跑 pip；模型目录在就不再下
+- torch wheel 下到 `_tmp\torch-download.whl`，**取消/暂停/断网都不删**，靠 HTTP `Range` 续传；旁边留一份 `.url` 记当初的地址，地址变了才丢掉重下（否则会拼出一个大小看着对、解压报 CRC 错的包）
+- pip 不再用 `--no-cache-dir`，改成 `--cache-dir _tmp\pipcache`（在 D 盘，不占 C），重跑时已装的包 pip 自己会跳过
+- `torch-download.whl` 只在**装成功**之后才删
+
+**暂停**用文件当暗号（`_tmp\pause.flag`）：helper 在下载循环里看到就写 `PAUSED|pct|文字` 然后以 4 退出；窗口把按钮变成「继续」，点了就删掉暗号重跑同一阶段，从 `.part` 续上。解压安装阶段不能暂停（pip 正在写 site-packages，掐了会留半个包），窗口会把按钮置灰并说明原因。
+
+**点 ✕ 等于取消**，会弹确认框 —— 不能让它「悄悄关掉、下载还在后台跑」。
+
+实测（假下载脚本，不联网，用 `BM_CLICK` 模拟真人点击按钮）：
+
+| 操作 | 结果 |
+|---|---|
+| 点「暂停」 | `PAUSED|86|model 已暂停在 0.1 MB`，阶段退出码 4 |
+| 点「继续」 | 暗号被清掉，同一阶段重新开始 |
+| 点「取消」 | `FAIL|0|model 已取消`，退出码 3，窗口自行关闭 |
+| 全流程（已装齐的机器） | 4 秒走完，`state=ok`，一个字节都没下 |
+
+**还有一个工具链的坑**：ISCC 7 把版本号开关从 `/D` 改成了 `-d`。用老写法会报
+`You may not specify more than one script filename` —— 它把 `/DMyAppVersion=2.2.0` 当成了第二个脚本文件名。`build_installer.py` 里两种写法都试一遍。
+
+**升级到 v2.2.0 之后，取消不再回滚那 13 MB 程序文件**（活搬到了 ssPostInstall，取消时文件已经装好，Inno 的回滚机制够不着）。取消后完成页会明确写「安装已取消、程序暂时用不了、重跑只补没完成的部分」，不写「安装完成」——这一点靠 `CurPageChanged(wpFinished)` 改文案，写在 `CurStepChanged` 里会被 Inno 覆盖掉。
+
+### 18.14 点快捷方式毫无反应：pythonw 把 stdout 变成了 None（v2.2.1）
+
+v2.2.0 装得很顺利（增量检测也对了），但用户装完点完成页的「立即启动」、再点桌面快捷方式，**两次都毫无反应**，连黑框都没有：
+
+> 完成时我选择了立即启动提词器，但是却毫无反应，黑色cmd窗口也没有出现
+
+「黑框没有出现」这一句其实是**设计如此** —— 快捷方式指向 `pythonw.exe`（GUI 子系统，不分配控制台）。所以真正的问题是：连浏览器都没打开、任务管理器里也没有进程。
+
+**先把三个「像」的嫌疑排掉**（都实测过）：
+
+| 嫌疑 | 怎么排的 | 结果 |
+|---|---|---|
+| 快捷方式指错了 | 读 `.lnk` 二进制里的路径串 | 目标 `python\pythonw.exe`、参数 `"…\run.py"`、工作目录都对 |
+| 依赖没装齐 | 用自带 `python.exe` 跑体检脚本 | 六个包全 OK，`import app.server` OK |
+| `_pth` 少了 `..`（§18.4 踩过） | 读 `python\python313._pth` | 四行齐全，含 `..` |
+
+**决定性的一步是「能否复现」**。同一个 `run.py`：
+
+```bat
+rem 能跑 —— stdout 被重定向到一个真实文件
+python\pythonw.exe run.py > out.txt 2>&1     → 端口 8756 起来，HTTP 200
+
+rem 不能跑 —— 和用户点快捷方式完全一样的路径
+cmd /c start "" "C:\Users\Public\Desktop\AI 提词器.lnk"   → 什么也没有
+```
+
+差别只有一个：**有没有一个真实的 stdout**。
+
+**根因**（拿到原始调用栈后才看见）：
+
+```
+uvicorn\logging.py:42   self.use_colors = sys.stdout.isatty()
+AttributeError: 'NoneType' object has no attribute 'isatty'
+  → logging.config.dictConfig 失败
+ValueError: Unable to configure formatter 'default'
+  → uvicorn.run() 在 Config() 里就抛，端口还一个字节都没监听
+```
+
+`pythonw.exe` 没有控制台，CPython 于是把 `sys.stdout` / `sys.stderr` 都设成 `None`。uvicorn 0.54 的 `DefaultFormatter.__init__` 无条件调用 `sys.stdout.isatty()` —— 在 `None` 上取属性直接炸。而且**这时候 stderr 也是 `None`，traceback 连一个字都没地方写**，进程静悄悄退出。用户看到的就是「点了，什么也没有」。
+
+⛔ 由此得到一条通用结论：**`pythonw` 下所有 `print` 都是空操作**（`print` 遇到 `sys.stdout is None` 会直接返回，不报错）。任何面向 GUI 子系统的 Python 程序，「静默消失」都必须先怀疑 `stdout is None`，而不是先怀疑快捷方式或打包。
+
+**三层修法**（`run.py`）：
+
+1. **`_ensure_streams()`** —— `main()` 第一件事就给两个流接上真实文件：
+   - 首选 `data\launch.log`，占位不可写就退 `%TEMP%`，再不行 `os.devnull`
+   - 关键不在「记录」，而在于**`sys.stdout` 必须是个有 `isatty()` 的对象**，哪怕它把字都扔掉
+   - 用**追加**不用覆盖：已经有一个实例在跑时再点一次也会走到这里，覆盖会把正在运行那份的启动记录抹掉
+2. **`_notify()`** —— 无控制台时改弹 `MessageBoxW`。以前「缺依赖」那条路径也是 `print` + `input()`，在 pythonw 下等于什么都不发生；现在会真的弹出来告诉你缺哪几个包。同理 `webbrowser.open` 返回 False 时弹窗给出 URL（服务已经起来了，别让人干等）。
+3. **`__main__` 最后一道网** —— 万一在 `_ensure_streams` 之前就崩了（import 期），直接写文件 + 弹窗，不信赖 `sys.stderr`。
+
+顺手改掉一句会误导人的话：无控制台时不再打印「关掉本窗口即停止服务」——**根本没有那个窗口**。
+
+验证（`v2.2.1`，装完立刻点桌面快捷方式）：
+
+| 检查 | 结果 |
+|---|---|
+| `GET /` | 200，3419 B |
+| `GET /prompter` | 200 |
+| `GET /api/state` | 200，返回完整 ui 配置 |
+| `data\launch.log` | 有「启动 / 程序 / 目录 / 控制台 无（pythonw）」四行 |
+| 再点一次快捷方式 | 识别到已有实例，`webbrowser.open` 后以 0 退出，不起第二份 |
+| 控制台版 `python.exe run.py` | 照常打印，`_HEADLESS=False`，不弹窗 |
+
+⚠️ 调试这类问题有个容易踩的坑：本机 `curl` 会走系统代理，服务停了以后代理返回的是 **502 + `upstream connect failed`**，看起来像「服务活了但接口坏了」。判断端口有没有人监听要用 `curl --noproxy '*'`。
+
+### 18.15 安装时程序还开着：从几十个弹窗到一句话（v2.2.4）
+
+用户实测（20:40）：
+
+> 为了任务继续我只能一个个跳过了……这要跳过的也太多了
+
+截图里的框是：
+
+```
+D:\text\AITeleprompter\python\libcrypto-3.dll
+尝试替换已存在的文件时出错：DeleteFile 失败；错误代码 5。拒绝访问。
+  → 重试(T)   → 跳过此文件(S)（不推荐）   → 取消安装
+```
+
+**根因**：`pythonw.exe` 把 `python313.dll` / `libcrypto-3.dll` / `_ssl.pyd` 这些映射进了内存，Windows 不允许删除被映射的文件。Inno 是**逐个文件**弹框，锁住几个就弹几次。装完还是个新旧混杂的目录 —— 跳过的是 python 运行时，缺一个就起不来。
+
+为什么 Inno 没提前发现：`CloseApplications=no`（刻意关掉的，怕它乱关别的程序），而我们的程序是 pythonw，任务栏和窗口列表里都没有它。
+
+**三层修法**：
+
+1. **程序启动时创建命名互斥体** `AITeleprompterRunning`（`run.py` 的 `_hold_instance_mutex`），`[Setup] AppMutex` 在向导出现之前就能发现它 —— 只弹**一条**提示。注意 `CreateMutex` 已存在时返回 `ERROR_ALREADY_EXISTS` 但仍是有效句柄，不能当失败处理（双击两下快捷方式时第二份就走这条路）。
+2. **提示文案自己写**（`[Messages] zhcn.SetupAppRunningError`）。Inno 默认只说「请关闭程序」，可 pythonw 没窗口、不在任务栏，用户根本找不到它。必须点名两条路：控制台右上角「退出程序」／任务管理器结束 `pythonw.exe`。
+3. **兜底：`PrepareToInstall` 里再探一次**（`CheckAppNotRunning`）。为什么 AppMutex 之外还要这道 —— 2.2.2 及更早的版本启动时根本没创建那个互斥体，用户开着旧版装新版时 AppMutex 什么也看不见，于是又回到逐文件报错。
+
+⛔ **两个坑**：
+
+- **Inno 7 的 Pascal Script 没有 `FileOpen`**（编译直接报 `Unknown identifier`）。改用 PowerShell 的 `[IO.File]::Open(path, 'Open', 'Write', 'None')` —— 只打开再关掉，**不做任何写入**。绝不能用 `SaveStringToFile` 这类「顺手写点东西」的招：探测目标是 `python313.dll`，一次误截断就是「装完打不开」。实测探针跑完 md5 不变。
+- **判断「程序在不在跑」不能靠 `ps | grep`**。这次它漏了 —— 没有输出，我据此以为探针误报，白查了一轮。可靠判据是 `curl --noproxy '*' http://127.0.0.1:8756/api/state` 是不是 200，或者用 Python 的 `OpenMutexW` 查那个互斥体。
+
+实测：
+
+| 场景 | 结果 |
+|---|---|
+| 程序开着，装 2.2.4 | 只弹一条「AI 提词器 正在运行…」，Setup 日志里是 `Message box (OK/Cancel)`，**一个文件都没动** |
+| 程序关掉，装 2.2.4 | 3 秒铺完文件，`prep exit code 0`，`state=ok` |
+| 互斥体 | 程序运行时 `OpenMutexW('AITeleprompterRunning')` 拿到句柄，错误码 0 |
+| 写探针 | 程序开着 → 写打开失败；`python313.dll` 的 md5 前后一致（没被改动） |
+
+⚠️ **测试环境的坑**（不是产品问题，但害我白跑了好几轮）：Git Bash 会把 `/VERYSILENT` 当路径改写成 `C:/…/PortableGit/VERYSILENT`，`/DIR=` 也被搅乱 —— 现象是安装器「秒退、什么也没装」，日志里 `Setup command line` 一眼就能看出来。正确写法是给**这一条命令**加前缀，不要 `export`（`export` 之后 `cmd //c` 的重写也会失效，会开出交互式命令行）：
+
+```bash
+MSYS_NO_PATHCONV=1 "dist\AI提词器-x.y.z-安装程序.exe" /VERYSILENT /NORESTART "/DIR=D:\某目录"
+```
+
+---
+
+## 19. 退出程序：pythonw 没有窗口可关（v2.2.3）
+
+快捷方式走 `pythonw.exe`，好处是不弹黑框，代价是**没有窗口可关**：用户关掉浏览器标签页，服务还在后台跑，想停只能去任务管理器里找 `pythonw.exe`。这不是正常用户该做的事。
+
+控制台右上角因此多了一个「退出程序」（红色，和旁边的「打开提词窗」明确区分开）。
+
+**链路**：`web/console.js` → `POST /api/quit` → `app/shutdown.py` → 置位 `uvicorn.Server.should_exit`。
+
+几个刻意的选择：
+
+- **不用信号**（`os.kill` / `signal.raise_signal`）。信号处理器只在主线程装得上，而且 Windows 的 `CTRL_C_EVENT` 只对控制台进程组有效 —— 我们最需要它工作的那种情况（`pythonw` 无控制台）根本送不进去。直接置位 uvicorn 自己的旗子，与有没有控制台无关。
+- **run.py 自己建 `uvicorn.Config` + `Server`**，不再调 `uvicorn.run()`。行为完全一样（`uvicorn.run()` 内部就是这两步），区别只是那个 `Server` 对象我们能拿到，`bind` 进 `app/shutdown.py`。为什么单开一个模块：`Server` 在 run.py 里创建，`/api/quit` 在 app/server.py 里，直接互相 import 会成环。
+- **必须用 `BackgroundTasks`**，不能直接在处理函数里退。Starlette 保证后台任务在响应发完之后才跑。早先直接调过一次，实测服务退得太快、连接被掐断，浏览器只拿到网络错误 —— 用户点完按钮看到「出错了」，以为没退成功。
+- **点按钮前先把稿子存盘**（`await saveScript()`）。退出会掐掉服务，还在等 800 ms 防抖的那次自动保存就没了。
+- **退出后盖一层遮罩**。接口全没了，留一堆点不动的按钮只会让人以为卡死。遮罩上写明「服务已停了，这个标签页可以关掉；下次要用双击桌面上的 AI 提词器」。
+- **4 秒后复查一次**「是不是真的退了」。优雅退出要跑 lifespan 的 finally（关音频流、等识别线程收尾），万一卡住，用户会看到「已退出」却还能刷新出界面 —— 那是最糟的一种谎话。复查还活着就直接说「退出没有生效，请到任务管理器结束 pythonw.exe」。
+- **`shutdown.py` 里有 8 秒硬退兜底**（`os._exit(0)`），防止优雅退出卡住导致「点了没反应」又回来。
+
+实测（2.2.4）：
+
+| 步骤 | 结果 |
+|---|---|
+| 点桌面快捷方式 | `/` 200、`/api/version` 返回 2.2.4、页面里有 `btnQuit` |
+| `POST /api/quit` | HTTP 200，响应体 `{"ok":true,"quitting":true}`（先回话再收摊） |
+| 退出后 | 端口立即关闭，进程消失 |
+| 再点快捷方式 | 照常启动，200 |
+
+**顺带把版本号收成一处**：控制台标题原本硬编码 `v2.0`，每次发版都要记得改第二处，迟早不一致。现在服务端读 `VERSION.txt`（构建脚本写的）并通过 `/api/version` 给出，前端只负责显示。源码目录没有这个文件时报 `dev`。
+
+---
+
 ## 已知局限
 
 - 延迟数字来自公开资料与本机推算，**未实测**；R2 才有真实值。
@@ -1426,5 +2209,7 @@ torch 的 CUDA 版**只能**从 `https://download.pytorch.org/whl/cu126` 拿，�
 
 > 本规划由软件工坊 AI 协作生成，关键决策请由工程负责人复核。
 > 版本线：v1.6 = R2 起飞版｜v1.7 = R3 对齐器｜v1.8 = 推进方式开关｜v1.9 = AI 跟随修复 + 稿件删除｜
-> v2.0 = 设置页 + 模型自动发现｜**v2.0.1 = 启动器修复（纯 ASCII bat + 依赖自检移入 run.py，当前）**。
+> v2.0 = 设置页 + 模型自动发现｜**v2.0.1 = 启动器修复（纯 ASCII bat + 依赖自检移入 run.py）**｜
+> v2.2 = 进度窗口搬出 Inno + 增量安装 + 暂停/继续｜v2.2.1 = 快捷方式启动修复（pythonw 的 sys.stdout 是 None）｜
+> v2.2.3 = 控制台「退出程序」｜**v2.2.4 = 安装时程序开着只提示一次，不再逐文件报错（当前）**。
 > 范围再变就另开 v2.1 文件，不在本文件上打补丁——避免"一处是旧结论、一处是新结论"。

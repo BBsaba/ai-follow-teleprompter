@@ -9,6 +9,12 @@ data/
 # 打包产物：tools/package.py 生成，随时可重建
 dist/
 
+# 安装包构建中间产物：tools/build_installer.py 生成
+#   build/cache/    下载缓存（Python embeddable 包、get-pip.py）
+#   build/payload/  解压好的便携运行时 + 拷进去的项目代码
+# 加起来 30 MB 出头，全是可重建的，不进库。
+build/
+
 # Python
 __pycache__/
 *.py[cod]

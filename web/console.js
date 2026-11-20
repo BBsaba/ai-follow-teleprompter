@@ -16,6 +16,7 @@
   let runState = 'IDLE';
   let asrOn = false;
   let asrState = null;        // 最近一次完整的状态对象（引擎/是否在听/最后识别时间）
+  let quitting = false;       // 按过「退出程序」之后不再重连 WS
   let lastAlignAt = 0;        // 最后一次"对齐成功"的时间戳
   let lastConf = 0;           // 最后一次对齐的置信度
   let saveTimer = 0;
@@ -428,6 +429,7 @@
     }
   }
   setInterval(() => {
+    if (quitting) return;                 // 已经退出了，别再刷新一堆没人看的状态
     renderAlignIdle();
     syncAiStatus();       // "多久没听到"要随时间走，不能只在收到消息时才算
   }, 500);
@@ -475,6 +477,56 @@
   $('btnSettings').addEventListener('click', () => {
     window.location.href = '/settings';
   });
+
+  /* ---------- 退出程序 ----------
+     快捷方式走 pythonw，没有控制台窗口，关掉浏览器标签页服务照样在后台跑；
+     以前想停只能去任务管理器结束 pythonw.exe —— 那不是正常用户该做的事。
+     这个按钮替掉那一步：先存稿，再请服务自己退，然后盖一层"已退出"。 */
+  $('btnQuit').addEventListener('click', async () => {
+    const busy = runState !== 'IDLE' ? '\n\n⚠️ 现在正在跟读，退出会立刻中断。' : '';
+    if (!confirm('退出提词器？' + busy
+      + '\n\n服务会停止；下次要用，双击桌面上的「AI 提词器」。')) return;
+
+    // 先把稿子落盘。退出会掐掉服务，还在等 800 ms 防抖的那次自动保存就没了。
+    try { await saveScript(); } catch (e) { /* 存不上也得让人退 */ }
+
+    quitting = true;
+    const btn = $('btnQuit');
+    btn.disabled = true;
+    btn.textContent = '正在退出…';
+    try {
+      await api('/api/quit', { method: 'POST' });
+    } catch (e) {
+      // 服务退得太快，这个请求本身报错也正常；到底停没停看下面的复查
+    }
+    showQuitScreen();
+    checkReallyQuit();
+  });
+
+  function showQuitScreen() {
+    $('quitScreen').hidden = false;
+    // 遮罩之外再把控件禁掉：万一哪天真被盖漏了，也别让人点到一排假按钮
+    document.querySelectorAll('header button, header select, .controls button, .controls input')
+      .forEach((el) => { el.disabled = true; });
+  }
+
+  /* 「已退出」这句话必须是真的。优雅退出要跑 lifespan 的 finally
+     （里面在关音频流、等识别线程收尾），万一卡住，用户会看到"已退出"
+     却还能刷新出界面 —— 那是最糟的一种谎话。4 秒后探一次，还活着就直说。 */
+  function checkReallyQuit() {
+    setTimeout(async () => {
+      try {
+        const r = await fetch('/api/state?probe=' + Date.now(), { cache: 'no-store' });
+        if (!r.ok) return;
+      } catch (e) {
+        return;                       // 连不上 = 真的停了，正是要的结果
+      }
+      const el = $('quitWarn');
+      el.hidden = false;
+      el.textContent = '退出没有生效 —— 服务还在后台跑。\n'
+        + '请到任务管理器里结束 pythonw.exe，或重启电脑。';
+    }, 4000);
+  }
 
   /* ---------- 快捷键（输入框内不拦截） ---------- */
   document.addEventListener('keydown', (e) => {
@@ -535,11 +587,18 @@
         renderVu(m);
       }
     };
-    ws.onclose = () => setTimeout(connect, 400);
+    // 退出时 WS 一定会断，这时候再重连就成了每 400 ms 一次的徒劳尝试
+    ws.onclose = () => { if (!quitting) setTimeout(connect, 400); };
   }
 
   /* ---------- 启动 ---------- */
   (async () => {
+    // 版本号由服务端读 VERSION.txt 给出，前端不认识任何具体数字
+    try {
+      const v = await api('/api/version');
+      if (v && v.version && v.version !== 'dev') $('verTag').textContent = 'v' + v.version;
+    } catch (e) { /* 拿不到就不显示，不影响用 */ }
+
     const d = await api('/api/state');
     UI = d.ui;
     curId = d.last_script_id;

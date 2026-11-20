@@ -1,6 +1,11 @@
 # ---- R1：壳与渲染（装了就能跑，不需要模型） ----
 fastapi>=0.110
 uvicorn>=0.27
+# uvicorn 的 ws 协议实现。⚠️ 别删：提词窗是靠 /ws 收滚动指令的，
+# 没有它 uvicorn 只会打一行 "No supported WebSocket library detected"，
+# 页面照常打开、但红线和文字一动不动 —— 症状很像"程序坏了"，
+# 其实是少了一个包。实测踩过：打包版首次安装就漏了它。
+websockets>=12
 pypinyin>=0.51
 
 # ---- R2：语音识别 ----

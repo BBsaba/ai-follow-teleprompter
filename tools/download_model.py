@@ -39,6 +39,35 @@ SKIP_PREFIX = (".git",)
 
 CHUNK = 1 << 20  # 1 MiB
 
+#: 用户点「取消」时安装器会建这个文件，我们看见就停。
+#: 用文件当暗号而不是杀进程：安装器拿不到本进程的 PID。
+CANCEL_FILE: str | None = None
+
+#: 暂停暗号。半截文件留着，下次从断点接着下（fetch 本来就有 Range 续传）。
+PAUSE_FILE: str | None = None
+
+#: 退出码约定，和 installer\prep-ui.ps1、pip_progress.py 一致
+RC_OK = 0
+RC_FAIL = 1
+RC_CANCEL = 3
+RC_PAUSE = 4
+
+
+class _Cancelled(Exception):
+    """用户取消了安装 —— 不是失败。"""
+
+
+class _Paused(Exception):
+    """用户按了暂停 —— 不是失败。"""
+
+
+def cancelled() -> bool:
+    return bool(CANCEL_FILE) and os.path.exists(CANCEL_FILE)
+
+
+def paused() -> bool:
+    return bool(PAUSE_FILE) and os.path.exists(PAUSE_FILE)
+
 
 def _opener() -> urllib.request.OpenerDirector:
     # 绕开系统代理：很多机器上 pip/curl 能通、urllib 走代理反而不通
@@ -70,7 +99,49 @@ def human(n: float) -> str:
     return f"{n:.1f} GB"
 
 
-def fetch(repo: str, path: str, dest: str, endpoint: str, tries: int = 5) -> None:
+class Status:
+    """把进度写成 `阶段|百分比|文字`，给安装程序轮询用。
+
+    ⚠️ 这份实现和 installer/pip_progress.py 里的那个是**故意重复**的：
+    installer/ 目录不进安装包、tools/ 才进，两个文件运行时要各自独立，
+    不能互相 import。格式必须保持一致 —— 安装程序的 Pascal 段只认
+    一行三段的形状。
+
+    path 为 None 时所有写入都变成空操作，所以手动跑脚本时不用管它。
+    """
+
+    def __init__(self, path: str | None, lo: int = 0, hi: int = 100) -> None:
+        self.path = Path(path) if path else None
+        self.lo = lo
+        self.hi = hi
+        self.last = 0.0
+
+    def write(self, stage: str, pct: float, text: str, force: bool = False) -> None:
+        """pct 用 0–100 的相对值，这里映射到 [lo, hi]。"""
+        if self.path is None:
+            return
+        now = time.time()
+        if not force and now - self.last < 0.25:
+            return
+        self.last = now
+        real = self.lo + (self.hi - self.lo) * max(0.0, min(100.0, pct)) / 100.0
+        line = f"{stage}|{real:.0f}|{text}".replace("\n", " ").replace("\r", " ")
+        try:
+            # 先写临时文件再替换，免得安装程序读到半行
+            tmp = self.path.with_suffix(".tmp")
+            tmp.write_text(line[:400], encoding="utf-8")
+            tmp.replace(self.path)
+        except OSError:
+            pass
+
+
+def fetch(repo: str, path: str, dest: str, endpoint: str, tries: int = 5,
+          on_bytes=None) -> None:
+    """下单个文件。
+
+    on_bytes(n)：每收到 n 字节回调一次；重试时用负数把上一轮多算的退回去，
+    否则一个文件断三次，进度条能冲到 300%。
+    """
     url = resolve_url(repo, path, endpoint)
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     for attempt in range(1, tries + 1):
@@ -78,6 +149,7 @@ def fetch(repo: str, path: str, dest: str, endpoint: str, tries: int = 5) -> Non
         req = urllib.request.Request(url)
         if have:
             req.add_header("Range", f"bytes={have}-")
+        counted = 0
         try:
             with _opener().open(req, timeout=60) as r:
                 total = have + int(r.headers.get("Content-Length") or 0)
@@ -93,6 +165,13 @@ def fetch(repo: str, path: str, dest: str, endpoint: str, tries: int = 5) -> Non
                             break
                         fh.write(block)
                         done += len(block)
+                        if on_bytes:
+                            on_bytes(len(block))
+                            counted += len(block)
+                        if cancelled():
+                            raise _Cancelled()
+                        if paused():
+                            raise _Paused()
                         if total:
                             pct = done * 100 / total
                             sp = (done - have) / max(1e-6, time.time() - t0)
@@ -106,6 +185,8 @@ def fetch(repo: str, path: str, dest: str, endpoint: str, tries: int = 5) -> Non
             sys.stdout.write("\n")
             return
         except (urllib.error.URLError, IOError, TimeoutError) as e:
+            if on_bytes and counted:
+                on_bytes(-counted)
             sys.stdout.write(f"\n  第 {attempt}/{tries} 次失败：{e}\n")
             if attempt == tries:
                 raise
@@ -158,7 +239,19 @@ def main() -> int:
     ap.add_argument("--endpoint", default="https://www.modelscope.cn",
                     help="模型源，需兼容 ModelScope 的 API（不支持 HuggingFace）")
     ap.add_argument("--check", action="store_true", help="只校验，不下载")
+    # 下面四个是给安装程序调用的：安装程序拿不到本进程的 stdout，
+    # 只能靠这个状态文件知道「到底在不在下、下到哪了」。
+    ap.add_argument("--status", default=None, help="把进度写进这个文件（安装程序用）")
+    ap.add_argument("--label", default=None, help="状态栏文案（安装程序用）")
+    ap.add_argument("--lo", type=int, default=0, help="进度区间下界（安装程序用）")
+    ap.add_argument("--hi", type=int, default=100, help="进度区间上界（安装程序用）")
+    ap.add_argument("--cancel", default=None, help="取消标记文件（安装程序用）")
+    ap.add_argument("--pause", default=None, help="暂停标记文件（安装程序用）")
     args = ap.parse_args()
+
+    global CANCEL_FILE, PAUSE_FILE
+    CANCEL_FILE = args.cancel
+    PAUSE_FILE = args.pause
 
     _endpoint_guard(args.endpoint)
 
@@ -174,17 +267,54 @@ def main() -> int:
     total = sum(s for _, s in files)
     print(f"共 {len(files)} 个文件，{human(total)}\n")
 
-    missing = 0
+    # 已经完整存在的文件也算进总进度：断点续传时不该让进度条从 0% 重来，
+    # 那会让人以为前一次白下了。
+    done = 0
     for path, size in files:
         dest = os.path.join(target, path.replace("/", os.sep))
-        ok = os.path.exists(dest) and os.path.getsize(dest) == size
-        if ok:
-            continue
-        missing += 1
-        if args.check:
-            print(f"  缺  {path}  ({human(size)})")
-        else:
-            fetch(repo, path, dest, args.endpoint)
+        if os.path.exists(dest) and os.path.getsize(dest) == size:
+            done += size
+
+    t0 = time.time()
+    base = done
+    st = Status(None if args.check else args.status, args.lo, args.hi)
+    label = args.label or "正在下载语音识别模型"
+    st.write("DOWNLOAD", 100.0 * done / total if total else 0,
+             f"{label}  {human(done)} / {human(total)}", force=True)
+
+    def on_bytes(n: int) -> None:
+        nonlocal done
+        done += n
+        if total <= 0:
+            return
+        sp = (done - base) / max(1e-6, time.time() - t0)
+        eta = int((total - done) / sp) if sp > 0 else 0
+        st.write("DOWNLOAD", done * 100.0 / total,
+                 f"{label}  {human(done)} / {human(total)}  {human(sp)}/s  "
+                 f"剩 {eta // 60}:{eta % 60:02d}")
+
+    missing = 0
+    try:
+        for path, size in files:
+            dest = os.path.join(target, path.replace("/", os.sep))
+            ok = os.path.exists(dest) and os.path.getsize(dest) == size
+            if ok:
+                continue
+            missing += 1
+            if args.check:
+                print(f"  缺  {path}  ({human(size)})")
+            else:
+                fetch(repo, path, dest, args.endpoint, on_bytes=on_bytes)
+    except _Cancelled:
+        # 已经下完的文件不删：下次跑只会补缺的那几个
+        st.write("FAIL", 0, f"{label}已取消（已下的文件留着，下次接着下）", force=True)
+        return RC_CANCEL
+    except _Paused:
+        st.write("PAUSED", 0, f"{label}已暂停", force=True)
+        return RC_PAUSE
+    except Exception as e:                      # noqa: BLE001 —— 失败要让安装程序知道
+        st.write("FAIL", 0, f"{label}失败：{e}", force=True)
+        raise
 
     if args.check:
         print("\n完整" if not missing else f"\n缺 {missing} 个文件，去掉 --check 重跑即可")
@@ -193,7 +323,12 @@ def main() -> int:
         return 0 if not missing else 1
 
     print(f"\n完成。权重在 {target}")
-    _report_found(target)
+    try:
+        _report_found(target)
+    except SystemExit:
+        st.write("FAIL", 0, f"{label}：下完了但文件不完整", force=True)
+        raise
+    st.write("DONE", 100, "语音识别模型已就绪", force=True)
     return 0
 
 
