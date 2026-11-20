@@ -461,7 +461,15 @@ function On-StageExit([System.Diagnostics.Process]$p) {
     Complete-Run 'cancelled' 0
     return
   }
-  if ($code -ne 0) {
+  # ⛔ 体检阶段把「1」也算成功。check_env.py 用退出码 1 表示**有缺的包**，
+  #    而那正是全新安装的常态（torch 一个都还没装）。它真正的结论在 stdout 的
+  #    JSON 里，退出码只是个顺手的人读提示。
+  #    不这么写的话，装到一台**干净机器**上必定在第一步就失败 —— 实测 2.3.0 的
+  #    第一次全新安装就栽在这儿，而之前每次都覆盖安装（包本来就齐、退出码 0），
+  #    所以这个坑一直没暴露。env-verify 不在此列：那时该有的都得有了，必须 0。
+  $okCodes = @(0)
+  if ($st.Name -eq 'env-check') { $okCodes = @(0, 1) }
+  if ($okCodes -notcontains $code) {
     # 镜像偶尔缺新包：这一次退回官方 PyPI 重试。别的阶段不重试 ——
     # pip 自己已经重试过三轮了，再包一层只会让用户多等十分钟。
     if ($st.Name -eq 'rest' -and -not $script:retriedRest) {

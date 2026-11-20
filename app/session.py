@@ -28,6 +28,7 @@ class Session:
         self.script = Script.from_text(text, int(ui["per_line"]))
         self.motion = Motion(config.MOTION["tau_fwd"], config.MOTION["tau_back"])
         self.aligner = Aligner(self.script)
+        self._apply_align_limits()
         self.state = "IDLE"
         self.pos = 0.0
         self.aligned = False              # 本次录制里 AI 是否已经接上（纯显示用）
@@ -49,11 +50,27 @@ class Session:
             self.aligner.reset(int(self.pos))
 
     # ---------- 稿件 ----------
+    def _apply_align_limits(self) -> None:
+        """把「最大跟进」从 ui 同步给对齐器。
+
+        为什么每拍都同步，而不是改设置时同步一次：`self.ui` 就是 `state["ui"]`
+        本身，谁都能直接往里写（控制台滑块、设置页、以后的别的接口）。每拍读一次
+        dict 是最省事的一致做法 —— 反正只是一次取值，量级可以忽略。
+
+        用 `ui.get(键, 默认值)` 而不是 `ui[键]`：老 `state.json` 里没有这个键，
+        `store.load_state()` 虽然会用 `dict(DEFAULT_UI)` 补上，但万一哪天有人绕过
+        它直接构造 ui，`ui[键]` 就是一个 KeyError，直接把跟读打挂。
+        """
+        self.aligner.max_jump_lines = int(
+            self.ui.get("max_jump_lines", config.DEFAULT_UI["max_jump_lines"])
+        )
+
     def rebuild(self, text: str | None = None) -> None:
         if text is not None:
             self.raw_text = text
         self.script = Script.from_text(self.raw_text, int(self.ui["per_line"]))
         self.aligner = Aligner(self.script)
+        self._apply_align_limits()          # 新建的 Aligner 会回到默认值，得重新同步
         self.pos = 0.0
         self.motion.snap(0.0)
         self.state = "IDLE"
@@ -102,6 +119,7 @@ class Session:
         """
         if self.state != "RUNNING" or not text or self.mode != "ai":
             return None
+        self._apply_align_limits()
         res = self.aligner.update(text)
         self.align_info = {"conf": round(res.conf, 3), "delta": res.delta,
                            "pos": res.pos, "score": round(res.score, 2)}

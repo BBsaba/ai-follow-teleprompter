@@ -154,6 +154,9 @@ def test_extra():
 def test_jump():
     print("[跳句]")
     s, a = make()
+    # 这一条验的是「DTW 在窗口内找得到远处那个位置」，不是位移上限 —— 所以关掉上限，
+    # 否则 72 字的跳读会被 5 行（70 字）夹住。上限本身由 test_jump_limit 负责。
+    a.max_jump_lines = 0
     a.reset(0)
     a.update(chars_of(s, 0, 12))
     # 用户直接跳到很后面（但仍在 lookahead 内）
@@ -188,6 +191,134 @@ def test_back_hysteresis():
     slot = chars_of(s, 20, 34)
     r2 = a.update(slot)
     check("高置信允许回退修正", r2.pos == expect_after(s, 34), f"pos={r2.pos} 期望={expect_after(s, 34)}")
+
+
+# ---------------------------------------------------------------- 跳跃限制（v2.3.0）
+# 用 TEXT 打底再接五句互不相同的正文：既够长（>210 字），又不会出现"整篇同一个句子"，
+# 否则 DTW 在每个副本上代价都是 0，测出来的东西和"位移上限"根本没关系。
+LONG = TEXT + (
+    "为什么会这样？因为他在重复已经会的东西，回避真正不会的东西。"
+    "抄错题是体力活，想明白错在哪才是脑力活。"
+    "所以第一件事是别急着加量，先看看孩子的时间到底花在了哪儿。"
+    "今天晚上回去，你可以让他把今天做的题分成三类：会做的、蒙对的、完全不会的。"
+    "分完你就知道问题在哪了。这个动作只要十分钟，比你报三个补习班都有用。"
+)
+
+
+def test_jump_limit():
+    """单次位移不得超过 max_jump_lines 行。
+
+    ⛔ 这是需求 B 的核心回归。对齐器一拍能在 pos-40 ~ pos+100 字里自由落点，
+    稿子里有重复句子时会锁到远处那个副本；按 14 字/行算一次能蹿 7 行，
+    0.3 秒滑过去 —— 用户看到的就是「大幅上下滚动，偏离正在读的地方」。
+    """
+    print("[跳跃限制]")
+    s = Script.from_text(LONG, 14)
+    per = s.per_line
+    check("测试稿够长（≥ 210 字）", len(s.chars) >= 210, len(s.chars))
+
+    limit = 5 * per                        # 5 行 × 14 字
+    pos0 = 100
+    # 终点落在搜索窗口内（≤ pos0 + lookahead=100），起点远在 5 行之外 ——
+    # 正好是"不夹就会蹿出去"的那个位置关系。
+    lo2, hi2 = pos0 + 78, pos0 + 99
+    q = chars_of(s, lo2, hi2)
+    want = expect_after(s, hi2)
+
+    # ① 先证明"不限制时确实会蹿很远"。这一步要是失败，说明 DTW 压根没找到远处的位置，
+    #    那下面所有"被夹住了"的断言都是空过 —— 必须让它先叫出来。
+    a = Aligner(s)
+    a.max_jump_lines = 0
+    a.reset(pos0)
+    r = a.update(q)
+    check(f"不限时确实往前蹿了 {r.delta} 字", r.pos > pos0 + limit, f"pos={r.pos}")
+
+    # ② 5 行上限：同一段输入，一拍只能到 pos0 + limit
+    a.max_jump_lines = 5
+    a.reset(pos0)
+    r = a.update(q)
+    check("5 行上限把单拍位移夹住", r.pos == pos0 + limit, f"pos={r.pos} 期望={pos0 + limit}")
+    check("delta 与夹后的位置一致", r.delta == limit, r.delta)
+
+    # ③ 不是卡死：连续几拍照样能追上去（3 Hz × 5 行 ≈ 210 字/秒，肉眼看是"滑过去"）
+    for _ in range(6):
+        a.update(q)
+    check("连续几拍能自己追到目标", abs(a.pos - want) <= 1, f"pos={a.pos} 期望={want}")
+
+    # ④ 往回退也夹。注意窗口是 -40/+100 不对称的，回退天然最多 40 字上下，
+    #    用 5 行（70 字）根本够不着，所以这一条得用 1 行（14 字）才夹得住。
+    slot = chars_of(s, 0, 20)
+    a.max_jump_lines = 1
+    a.reset(40)
+    r = a.update(slot)
+    check("1 行上限时夹住回退", r.pos >= 40 - per, f"pos={r.pos}")
+
+    a.max_jump_lines = 0                   # 同一次输入，不限时应该一步退到底
+    a.reset(40)
+    r0 = a.update(slot)
+    check("不限时回退是完整的（不是本来就退不动）", r0.pos == expect_after(s, 20), f"pos={r0.pos}")
+
+    # ⑤ 0 = 不限，行为与 v2.2.4 完全一致
+    a.max_jump_lines = 0
+    a.reset(pos0)
+    r = a.update(q)
+    check("0 = 不限（回到 v2.2.4 行为）", r.pos == want, f"pos={r.pos} 期望={want}")
+
+
+def test_jump_invariant():
+    """无论从哪儿开始念、念到哪一段，单拍位移都不越界。
+
+    比单点用例更狠：这里拿「同一段话重复三遍」的稿子扫一遍 —— 那正是用户报的场景，
+    重复副本会让 DTW 在多个等代价位置之间摇摆。
+    """
+    print("[跳跃限制 · 不变量]")
+    s = Script.from_text(TEXT * 3, 14)
+    a = Aligner(s)
+    a.max_jump_lines = 5
+    limit = 5 * s.per_line
+    worst = 0
+    starts = 0
+    for start in range(0, max(1, len(s.chars) - 30), 7):
+        starts += 1
+        a.reset(start)
+        for off in (0, 30, 60, 90, 130):       # 越往后越容易锁到远处的重复副本
+            lo = start + off
+            hi = min(lo + 18, len(s.chars))
+            if hi - lo < 4:
+                continue
+            r = a.update(chars_of(s, lo, hi))
+            worst = max(worst, abs(r.delta))
+    check(f"扫 {starts} 个起点，单拍位移从未超过 {limit} 字", worst <= limit, f"最大 {worst} 字")
+
+
+def test_jump_limit_session():
+    """ui 里的「最大跟进」要真的传到对齐器上，包括运行中改值和 rebuild。"""
+    print("[跳跃限制 · 接进会话]")
+    from app import config
+    from app.session import Session
+
+    ui = dict(config.DEFAULT_UI)
+    ui["follow_mode"] = "ai"
+    ui["max_jump_lines"] = 8
+    s = Session(ui, LONG)
+    check("构造时就同步了最大跟进", s.aligner.max_jump_lines == 8, s.aligner.max_jump_lines)
+
+    s.start()
+    ui["max_jump_lines"] = 2                   # 模拟控制台滑块改了 ui
+    s.feed_asr(chars_of(s.script, 0, 20))
+    check("改 ui 后下一拍就生效", s.aligner.max_jump_lines == 2, s.aligner.max_jump_lines)
+
+    ui["max_jump_lines"] = 0
+    s.rebuild()                                # rebuild 会 new 一个 Aligner，别落回默认值
+    check("rebuild 之后仍跟着 ui", s.aligner.max_jump_lines == 0, s.aligner.max_jump_lines)
+
+    # 老 state.json 里没有这个键时，不能 KeyError，要退回 DEFAULT_UI
+    ui2 = {k: v for k, v in config.DEFAULT_UI.items() if k != "max_jump_lines"}
+    ui2["follow_mode"] = "ai"
+    s2 = Session(ui2, LONG)
+    check("ui 缺这个键时退回默认值",
+          s2.aligner.max_jump_lines == config.DEFAULT_UI["max_jump_lines"],
+          s2.aligner.max_jump_lines)
 
 
 def test_session_follow():
@@ -261,6 +392,9 @@ def main():
     test_jump()
     test_noise()
     test_back_hysteresis()
+    test_jump_limit()
+    test_jump_invariant()
+    test_jump_limit_session()
     test_session_follow()
     print(f"\n通过 {OK}，失败 {FAIL}")
     return 0 if FAIL == 0 else 1

@@ -10,7 +10,7 @@ from fastapi import BackgroundTasks, FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import audio, config, model_finder, shutdown, store
+from . import audio, config, model_finder, shutdown, storage, store
 from .listener import Listener
 from .session import Session
 
@@ -327,6 +327,34 @@ async def api_put_settings(patch: dict):
     payload["changed"] = changed
     await hub.broadcast({"type": "settings", "asr": state["asr"]})
     return payload
+
+
+# ---------------- 磁盘占用 ----------------
+#: 统计和清理都要走文件系统，放线程池跑：模型目录几万个文件，在事件循环里数
+#: 会把 60 Hz 的心跳（_ticker）整个卡住，表现为跟读画面一顿一顿的。
+@app.get("/api/storage")
+async def api_storage():
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, storage.scan)
+
+
+@app.post("/api/storage/clean")
+async def api_storage_clean(body: dict | None = None):
+    """清日志 / 清安装缓存。
+
+    ⛔ 只认 `storage.CLEANERS` 这张表。传 `what=scripts` 会拿到 400 ——
+    稿件是用户资产，这个接口**永远不该有删除它的能力**，白名单比黑名单可靠：
+    将来有人往 storage 里加了新函数，也不会因为漏配一个 `if` 就变成可远程调用的删除器。
+    """
+    what = str((body or {}).get("what") or "").strip()
+    fn = storage.CLEANERS.get(what)
+    if fn is None:
+        return JSONResponse({"ok": False, "error": f"不能清理这类东西：{what!r}"},
+                            status_code=400)
+    loop = asyncio.get_running_loop()
+    did = await loop.run_in_executor(None, fn)
+    after = await loop.run_in_executor(None, storage.scan)
+    return {"ok": not did["failed"], "did": did, "storage": after}
 
 
 # ---------------- 状态 ----------------

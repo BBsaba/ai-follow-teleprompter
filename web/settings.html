@@ -108,6 +108,28 @@
         改完不是立刻生效：模型要等下一次「开始」才重新加载，否则保存按钮会卡十几秒。
       </p>
     </section>
+
+    <!-- ---------- 数据占用 ---------- -->
+    <section class="card">
+      <div class="card-head">
+        <h2>数据占用</h2>
+        <span id="storChip" class="chip">—</span>
+      </div>
+      <p class="hint">
+        程序运行时不写临时文件：录音只进内存，不落盘，也不缓存音频。
+        唯一会自己长大的只有启动日志，超过 512 KB 会自动轮转，只留最近一份。
+        <b>这里的东西都不会被自动删除</b>，清哪个由你点。
+      </p>
+
+      <table class="stor">
+        <tbody id="storBody"></tbody>
+        <tfoot>
+          <tr><th>合计</th><td></td><td id="storTotal">—</td><td></td></tr>
+        </tfoot>
+      </table>
+
+      <p id="storMsg" class="msg"></p>
+    </section>
   </main>
 
   <div id="toast" class="toast" hidden></div>

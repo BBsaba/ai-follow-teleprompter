@@ -14,6 +14,15 @@ STATE_FILE = DATA_DIR / "state.json"
 WEB_DIR = ROOT / "web"
 MODELS_DIR = ROOT / "models"
 
+#: 启动日志的两个候选位置。run.py 按顺序取第一个**写得进去**的。
+#: 第一个是正常位置（跟着安装目录走，用户能自己翻）；装到不可写目录时退到 %TEMP%。
+#: ⛔ 两张表要一起维护：`app/storage.py` 的「数据占用」和「清理日志」按同一份算，
+#: 只加一处就会出现"面板显示没有日志，实际 %TEMP% 里躺着一个"。
+LOG_FILES = (
+    DATA_DIR / "launch.log",
+    Path(os.environ.get("TEMP") or ".") / "AITeleprompter-launch.log",
+)
+
 # 权重默认落在 models/ 下。
 # ASR_MODEL 只是「期望位置」——下载脚本的目标、报错文案里都引用它；
 # 真正加载时由 app/model_finder.py 在 models/ 里**按内容找**，
@@ -49,6 +58,13 @@ DEFAULT_UI = {
     # 其它
     "mirror": False,
     "cps": 4.2,          # 自动滚动速度：字/秒
+    # AI 跟随的收敛限制：一次更新最多移动几行。0 = 不限（= v2.2.4 的行为）。
+    # 为什么需要它：对齐器一拍能在 pos-40 ~ pos+100 字里自由落点，稿子里有重复
+    # 句子时会锁到远处那个副本上；按 14 字/行算，100 字≈7 行，0.3 秒滑过 7 行，
+    # 看上去就是"唰"地蹿出去。默认 5 行：既压掉突兀感，又不至于正常语速被拽住。
+    "max_jump_lines": 5,
+    "max_jump_lines_min": 0,
+    "max_jump_lines_max": 50,
     # 推进方式，二选一，不会同时生效：
     #   auto = 按 cps 匀速自动滚动（不需要麦克风）
     #   ai   = 只在识别到稿子内容时才动，不说话就不动

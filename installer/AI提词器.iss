@@ -501,6 +501,26 @@ begin
 
   WriteResultFile;
   Log('result written: ' + ResultPath);
+
+  { 装成了就把 _tmp 清掉。
+
+    里面躺的是 pip 下载缓存（torch 一个包就 240 MB）和几个进度/标志文件，
+    安装一结束就再没人用了。v2.3.0 之前只在卸载时删（见 CurUninstallStepChanged），
+    所以装完之后它一直留在安装目录里，直到用户卸载 —— 白占几百 MB。
+
+    ⛔ 只在真装成时删（DepsReady）。失败或取消时留着：用户多半会再跑一次安装
+       程序，缓存还在就不用重新下 240 MB。
+    ⛔ 用 DelTree 一把清，里面还有 pipcache 的子目录树。
+    ⛔ 删不掉不能影响安装结果 —— 装都装好了，多留一个缓存不影响用。 }
+  if DepsReady then
+  begin
+    try
+      DelTree(TmpDir, True, True, True);
+      Log('_tmp cleaned');
+    except
+      Log('_tmp cleanup failed: ' + GetExceptionMessage);
+    end;
+  end;
 end;
 
 

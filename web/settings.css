@@ -222,3 +222,41 @@ select:disabled, input[type="text"]:disabled { opacity: .5; }
 .toast[hidden] { display: none; }
 .toast.ok { border-color: #1E5A2E; color: #62D97C; }
 .toast.err { border-color: #4A1D1F; color: #FF6369; }
+
+/* ---------- 数据占用表 ---------- */
+/* 用 table 而不是 grid：这一块天生是「一行一项」的表，tfoot 还要对齐合计，
+   grid 得给每一行手写列宽，加一行就忘一处。 */
+.stor {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin-top: 4px;
+}
+.stor th,
+.stor td {
+  padding: 7px 8px;
+  text-align: left;
+  border-bottom: 1px solid #21252C;
+  vertical-align: middle;
+}
+.stor thead th { color: #6B7280; font-weight: 500; font-size: 12px; }
+.stor tbody tr:last-child td { border-bottom: 1px solid #262A31; }
+.stor tfoot th,
+.stor tfoot td { color: #9AA3AE; font-weight: 600; border-bottom: none; }
+
+/* 名称列窄、数量列窄、体积列右对齐等宽数字、按钮列贴右 */
+.stor td:nth-child(1) { width: 38%; color: #D7DCE3; }
+.stor td:nth-child(2) { width: 16%; color: #7C8794; font-size: 12px; }
+.stor td:nth-child(3) {
+  width: 26%;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: #D7DCE3;
+}
+.stor td:nth-child(4) { width: 20%; text-align: right; }
+.stor .note { display: block; color: #5F6A76; font-size: 11.5px; margin-top: 2px; }
+.stor button.ghost {
+  padding: 3px 10px;
+  font-size: 12px;
+  border-radius: 6px;
+}

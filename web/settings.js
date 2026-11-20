@@ -174,6 +174,7 @@
   }
 
   async function load() {
+    loadStorage();          // 统计要遍历文件系统，别让它挡住设置先显示
     try {
       apply(await get('/api/settings'));
     } catch (e) {
@@ -314,6 +315,68 @@
     }
   }
 
+  // ---------- 数据占用 ----------
+  /* 只统计、只显示；唯一的删除入口就是这张表里的「清理」按钮，
+     而且后端只认白名单里的名字（logs / install_cache）—— 稿件永远不在里面。 */
+  function fmtBytes(n) {
+    n = Number(n) || 0;
+    if (n < 1024) return n + ' B';
+    const unit = ['KB', 'MB', 'GB', 'TB'];
+    let v = n / 1024;
+    let i = 0;
+    while (v >= 1024 && i < unit.length - 1) { v /= 1024; i += 1; }
+    return (v >= 100 ? v.toFixed(0) : v.toFixed(1)) + ' ' + unit[i];
+  }
+
+  function renderStorage(st) {
+    const body = $('storBody');
+    if (!st || !st.rows) return;
+    body.innerHTML = st.rows.map((r) => {
+      const cnt = (r.count === null || r.count === undefined) ? '—' : `${r.count} ${r.unit}`;
+      const btn = r.cleanable
+        ? `<button class="ghost" data-clean="${esc(r.key)}" data-label="${esc(r.label)}">清理</button>`
+        : '';
+      return `<tr>
+        <td>${esc(r.label)}<span class="note">${esc(r.note || '')}</span></td>
+        <td>${esc(cnt)}</td>
+        <td>${fmtBytes(r.bytes)}</td>
+        <td>${btn}</td>
+      </tr>`;
+    }).join('');
+    $('storTotal').textContent = fmtBytes(st.total);
+    $('storChip').textContent = '合计 ' + fmtBytes(st.total);
+  }
+
+  async function loadStorage() {
+    try {
+      renderStorage(await get('/api/storage'));
+    } catch (e) {
+      setMsg('storMsg', '统计失败：' + e.message, 'err');
+    }
+  }
+
+  async function cleanStorage(what, label, btn) {
+    if (!confirm(`清理${label}？\n\n只删${label}，稿件和设置一个字都不会动。`)) return;
+    btn.disabled = true;
+    setMsg('storMsg', `正在清理${label}…`, '');
+    try {
+      const r = await post('/api/storage/clean', { what });
+      renderStorage(r.storage);
+      const d = r.did || {};
+      const bits = [];
+      if ((d.deleted || []).length) bits.push('删掉 ' + d.deleted.join('、'));
+      // 被占用删不掉的，退一步清空 —— 得说清楚，否则用户看到文件还在会以为没生效
+      if ((d.truncated || []).length) bits.push('清空 ' + d.truncated.join('、') + '（正被占用）');
+      if ((d.failed || []).length) bits.push('没清掉 ' + d.failed.join('、'));
+      setMsg('storMsg', bits.length ? bits.join('；') : '没有可清理的文件。',
+        (d.failed || []).length ? 'warn' : 'ok');
+    } catch (e) {
+      setMsg('storMsg', '清理失败：' + e.message, 'err');
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
   // ---------- 绑定 ----------
   $('btnSave').addEventListener('click', save);
   $('btnMicTest').addEventListener('click', micTest);
@@ -333,6 +396,11 @@
     setMsg('modelMsg', '', '');
   });
   $('modelPath').addEventListener('input', () => setMsg('modelMsg', '', ''));
+  // 清理按钮是渲染出来的（行数不固定），所以绑在容器上做事件委托
+  $('storBody').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-clean]');
+    if (b) cleanStorage(b.dataset.clean, b.dataset.label, b);
+  });
   document.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); save(); }
   });

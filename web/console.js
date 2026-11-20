@@ -48,6 +48,9 @@
   }
 
   /* ---------- 控件同步 ---------- */
+  /* 0 是「不限」这一档，不是「0 行」—— 后者读不通，也是这个滑块唯一需要额外解释的取值 */
+  const fmtJump = (v) => (Number(v) === 0 ? '不限' : v + ' 行');
+
   function syncControls() {
     if (!UI) return;
     $('rFont').min = UI.font_min;
@@ -62,11 +65,15 @@
     $('rCps').min = 1;
     $('rCps').max = 10;
     $('rCps').value = UI.cps;
+    $('rJump').min = UI.max_jump_lines_min;
+    $('rJump').max = UI.max_jump_lines_max;
+    $('rJump').value = UI.max_jump_lines;
 
     $('oFont').textContent = UI.font_px + ' px';
     $('oPer').textContent = UI.per_line + ' 字';
     $('oCue').textContent = Math.round(UI.cue_ratio * 100) + '%';
     $('oCps').textContent = Number(UI.cps).toFixed(1) + ' 字/秒';
+    $('oJump').textContent = fmtJump(UI.max_jump_lines);
     btnMirror.textContent = UI.mirror ? '镜像 开' : '镜像 关';
     updateClamp();
     syncMode();
@@ -91,6 +98,15 @@
     const oCps = $('oCps');
     if (oCps && UI) {
       oCps.textContent = ai ? '不用' : Number(UI.cps).toFixed(1) + ' 字/秒';
+    }
+
+    // 「最大跟进」正好反过来：只对 AI 跟随有意义，自动滚动下置灰。
+    // 两个滑块永远是"一个亮一个灰"，本身就把"当前哪个模式在起作用"说清楚了。
+    const rJump = $('rJump');
+    if (rJump) rJump.disabled = !ai || runState !== 'IDLE';
+    const oJump = $('oJump');
+    if (oJump && UI) {
+      oJump.textContent = ai ? fmtJump(UI.max_jump_lines) : '不用';
     }
 
     const note = $('modeNote');
@@ -182,7 +198,7 @@
   $('btnModeAi').addEventListener('click', () => setFollowMode('ai'));
 
   function setControlsEnabled(on) {
-    ['rFont', 'rPer', 'rCue', 'btnMirror', 'btnNew', 'btnImport', 'btnDel'].forEach((id) => {
+    ['rFont', 'rPer', 'rCue', 'rJump', 'btnMirror', 'btnNew', 'btnImport', 'btnDel'].forEach((id) => {
       const el = $(id);
       if (el) el.disabled = !on;
     });
@@ -228,6 +244,7 @@
   bindRange('rPer', 'per_line', 'oPer', (v) => v + ' 字');
   bindRange('rCue', 'cue_ratio', 'oCue', (v) => v + '%');
   bindRange('rCps', 'cps', 'oCps', (v) => Number(v).toFixed(1) + ' 字/秒');
+  bindRange('rJump', 'max_jump_lines', 'oJump', fmtJump);
 
   /* ---------- 稿件 ---------- */
   async function loadScriptList() {

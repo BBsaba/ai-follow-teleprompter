@@ -138,10 +138,57 @@ def test_auto_ear():
             ui["follow_mode"] = old_mode
 
 
+# ---------------- 磁盘占用接口 ----------------
+def test_storage_api():
+    """`/api/storage` 与 `/api/storage/clean`。
+
+    重点不是"能删日志"，是**不能删别的东西** —— 白名单比黑名单可靠：
+    将来 storage 里多了一个新清理函数，也不会因为漏配一个 if 就变成
+    可以从浏览器调用的删除器。
+    """
+    print("[磁盘占用接口]")
+    from app import storage
+
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        old_logs, old_cache = config.LOG_FILES, storage.INSTALL_CACHE_DIR
+        config.LOG_FILES = (tmp / "data" / "launch.log",)
+        storage.INSTALL_CACHE_DIR = tmp / "_tmp"
+        try:
+            (tmp / "data").mkdir(parents=True)
+            (tmp / "data" / "launch.log").write_text("x" * 64, "utf-8")
+            (tmp / "data" / "launch.log.1").write_text("y" * 64, "utf-8")
+
+            st = asyncio.run(server.api_storage())
+            rows = {r["key"]: r for r in st["rows"]}
+            check("有日志这一行", "logs" in rows, list(rows))
+            check("日志 2 个文件 128 字节",
+                  rows["logs"]["count"] == 2 and rows["logs"]["bytes"] == 128, rows["logs"])
+
+            r = asyncio.run(server.api_storage_clean({"what": "logs"}))
+            check("清理日志返回 ok", r.get("ok") is True, r)
+            after = {x["key"]: x for x in r["storage"]["rows"]}["logs"]
+            check("清理后日志行归零", after["bytes"] == 0 and after["count"] == 0, after)
+            check("两个文件都不在了",
+                  not (tmp / "data" / "launch.log").exists()
+                  and not (tmp / "data" / "launch.log.1").exists())
+
+            # ⛔ 白名单：稿件永远不在可清理范围里
+            bad = asyncio.run(server.api_storage_clean({"what": "scripts"}))
+            check("传 scripts 被拒（400）", getattr(bad, "status_code", None) == 400, bad)
+            bad2 = asyncio.run(server.api_storage_clean({}))
+            check("不传 what 也被拒（400）", getattr(bad2, "status_code", None) == 400, bad2)
+            bad3 = asyncio.run(server.api_storage_clean({"what": "../../etc"}))
+            check("路径样的名字也被拒", getattr(bad3, "status_code", None) == 400, bad3)
+        finally:
+            config.LOG_FILES, storage.INSTALL_CACHE_DIR = old_logs, old_cache
+
+
 def main():
     test_sid_guard()
     test_delete_script()
     test_auto_ear()
+    test_storage_api()
     print(f"\n通过 {OK}，失败 {FAIL}")
     return 0 if FAIL == 0 else 1
 

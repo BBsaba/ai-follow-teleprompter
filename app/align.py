@@ -114,6 +114,11 @@ class Aligner:
         self.gap_asr = float(c["gap_asr"])
         self.near = float(c["cost_near"])
 
+        # 单次更新的位移上限，单位「行」，0 = 不限。
+        # 真正的值由 Session 每拍从 ui 同步进来；这里取 DEFAULT_UI 里的同一个数，
+        # 是为了「直接 new 一个 Aligner」时也有合理默认，而不是在两处各写一个 5。
+        self.max_jump_lines = int(config.DEFAULT_UI.get("max_jump_lines", 0))
+
         self.pos = 0
         self.last = AlignResult(0, 0.0, 0)
         self.updates = 0        # 成交次数（调试用）
@@ -163,6 +168,23 @@ class Aligner:
         # 迟滞：置信度不够高时不许大幅回退，否则念错一个字整行往回弹
         if new_pos < self.pos - self.back_step_max and conf < self.back_conf:
             new_pos = self.pos
+
+        # 收敛：一拍最多挪 max_jump_lines 行（0 = 不限）。
+        #
+        # ⛔ 必须夹在这里（Aligner 内部），不能改成在 Session.feed_asr() 里夹。
+        # 因为 self.pos 同时是**下一拍搜索窗口的锚点**：在外面夹，对齐器内部还停在
+        # 远处，下一拍会绕着一个"到不了的位置"算窗口，越算越偏，反而更爱乱跳。
+        #
+        # 要压的是"一次移动多远"，不是"搜索窗口多大"。⛔ 别去调小 lookahead ——
+        # 那 100 字是留给正常语速 4 秒的余量，压下去跟读会掉队，等于用一个毛病
+        # 换另一个毛病。
+        #
+        # 连续几拍照样能挪很远（3 Hz × 5 行 × 14 字 ≈ 210 字/秒），所以真正的跳读
+        # 只是从"瞬移"变成"快速滑过去"；滚轮更是完全不受影响 —— wheel() 走的是
+        # reset()，人工接管时锚点直接挪过去。
+        limit = self.max_jump_lines * self.script.per_line
+        if limit > 0:
+            new_pos = max(self.pos - limit, min(self.pos + limit, new_pos))
 
         delta = new_pos - self.pos
         self.pos = new_pos

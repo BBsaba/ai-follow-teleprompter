@@ -217,7 +217,9 @@ aside {
 
 .controls label {
   display: grid;
-  grid-template-columns: 42px 1fr 76px;
+  /* 第一列 56px 而不是 42px：要放得下「最大跟进」四个字。
+     窄了它不会换行，而是直接压到滑块上 —— 文字和控件叠在一起比挤一点难看多了。 */
+  grid-template-columns: 56px 1fr 76px;
   align-items: center;
   gap: 10px;
   color: #9AA3AE;

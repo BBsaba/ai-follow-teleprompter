@@ -48,6 +48,7 @@ STEPS = [
     ("test_server.py", False, False),
     ("test_model_finder.py", False, False),
     ("test_settings.py", False, False),
+    ("test_storage.py", False, False),
     ("test_follow_e2e.py", False, True),
     ("test_live.py", False, True),
     ("test_ws.py", True, False),

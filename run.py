@@ -88,6 +88,43 @@ def _hold_instance_mutex() -> None:
         _mutex_handle = None
 
 
+def _log_targets() -> tuple[Path, ...]:
+    """启动日志的候选位置，按优先级排。
+
+    真源是 `config.LOG_FILES`（`app/storage.py` 的「数据占用」和「清理日志」按
+    同一份算）。这里再做一次字面兜底，是为了「app 包本身炸了」那种情况 ——
+    那正是 import app 不成功的时候，不能指望它给出路径。
+    """
+    try:
+        from app import config
+
+        return tuple(config.LOG_FILES)
+    except Exception:
+        return (
+            Path(__file__).resolve().parent / "data" / "launch.log",
+            Path(os.environ.get("TEMP") or ".") / "AITeleprompter-launch.log",
+        )
+
+
+def _open_log(path: Path):
+    """以追加方式打开日志，超过 512 KB 先轮转。
+
+    ⛔ 顺序：**先 rename 再 open("a")**。反过来的话，在 Windows 上文件正被自己
+    占着，rename 会 PermissionError、被外层的 `except OSError` 吞掉 —— 看上去
+    "加了轮转但文件还是一直长"，是最难查的那一类"没效果"。
+
+    轮转逻辑本身在 `app/storage.py`（`run.py` 和清理接口共用一份）；这里只是
+    在 import 不到 app 时退回"不轮转的直接追加"，不能让轮转把启动本身搞挂。
+    """
+    try:
+        from app.storage import open_log as _rotate_open
+
+        return _rotate_open(path)
+    except Exception:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return open(path, "a", encoding="utf-8", buffering=1)
+
+
 def _ensure_streams() -> Path | None:
     """没有控制台时，给 sys.stdout / sys.stderr 接上一个真实的文件。
 
@@ -109,15 +146,12 @@ def _ensure_streams() -> Path | None:
 
     sink = None
     log_path: Path | None = None
-    for cand in (
-        Path(__file__).resolve().parent / "data" / "launch.log",
-        Path(os.environ.get("TEMP") or ".") / "AITeleprompter-launch.log",
-    ):
+    for cand in _log_targets():
         try:
-            cand.parent.mkdir(parents=True, exist_ok=True)
             # 追加而不是覆盖：已经有一个实例在跑时，再点一次快捷方式也会走到这里。
             # 用 "w" 会把正在跑的那个实例的启动记录抹掉，日志反而没用了。
-            sink = open(cand, "a", encoding="utf-8", buffering=1)
+            # 超过 512 KB 会先轮转成 .log.1（只留一份，总占用上限约 1 MB）。
+            sink = _open_log(cand)
             log_path = cand
             break
         except OSError:
@@ -302,6 +336,19 @@ def main() -> None:
             pass
         raise SystemExit(1)
 
+    # 依赖齐了才扫安装残留：装不完整的机器上，`_tmp` 里的缓存正是用户
+    # "重跑安装程序补依赖"时要用的东西，这时候删掉纯属添乱。
+    # 只清明确是垃圾的那几样（is-*.tmp 和 _tmp 里的进度/标志文件），见
+    # app/storage.py 的 sweep_startup_junk —— ⛔ 不碰 pip 下载缓存。
+    try:
+        from app.storage import sweep_startup_junk
+
+        gone = sweep_startup_junk()
+        if gone:
+            print(f"[提词器] 清掉安装残留 {len(gone)} 项：{'、'.join(gone)}")
+    except Exception:
+        pass                                   # 清残留失败绝不该挡住启动
+
     import uvicorn                      # 依赖确认后才 import，否则就白炸了
 
     from app import config, shutdown
@@ -381,13 +428,12 @@ if __name__ == "__main__":
         # 最后一道网。走到这儿说明连 main() 都没撑住 —— 多半是 import 期就炸了，
         # 那时候 _ensure_streams 还没跑，stderr 可能还是 None，所以直接写文件。
         detail = traceback.format_exc()
-        for cand in (
-            Path(__file__).resolve().parent / "data" / "launch.log",
-            Path(os.environ.get("TEMP") or ".") / "AITeleprompter-launch.log",
-        ):
+        # ⛔ 和 _ensure_streams 共用同一套「轮转 + 打开」，别在这儿再复制一遍 open("a")。
+        # 两处各写一套的结果是：以后加轮转只改了一处，另一处（也就是真出事时走的那条）
+        # 照样让日志无限长 —— 等于没加。
+        for cand in _log_targets():
             try:
-                cand.parent.mkdir(parents=True, exist_ok=True)
-                with open(cand, "a", encoding="utf-8") as f:
+                with _open_log(cand) as f:
                     f.write("\n[崩溃] " + time.strftime("%Y-%m-%d %H:%M:%S") + "\n" + detail)
                 break
             except OSError:
