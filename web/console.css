@@ -316,6 +316,8 @@ input[type="range"]::-webkit-slider-thumb {
 }
 .asr-align.ok { color: #62D97C; }
 .asr-align.warn { color: #E5A94D; }
+/* 追赶中：限速在正常干活，不是故障，所以用中性蓝而不是警告黄 */
+.asr-align.busy { color: #6D9EFF; }
 .asr-err {
   font-size: 11px;
   color: #E5484D;

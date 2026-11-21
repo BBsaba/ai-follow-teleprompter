@@ -78,6 +78,57 @@ def _playwright_ok() -> bool:
         return False
 
 
+# ---------------------------------------------------------------- 用户数据保护
+# ⛔ 为什么必须有这一段（v2.3.0 事故）：
+#   test_ws / test_ui 是**通过 HTTP 连真实服务**测的，服务读写的就是项目里的
+#   `data/`。跑一遍 test_ui，它会拖滑块、存稿 → 用户的 `per_line`、`cps`、字号
+#   全被改成测试用例里的值，`001.md` 的 mtime 也被刷新。
+#   实测代价：用户手工调的「每行 20 字」被改回 14，还以为是程序自己丢的设置。
+#   → 连服务的测试跑之前先把 data/ 整个拷走，跑完再放回来。
+
+def _backup_user_data() -> Path | None:
+    import shutil
+    import tempfile
+
+    data = ROOT / "data"
+    if not data.is_dir():
+        return None
+    tmp = Path(tempfile.mkdtemp(prefix="aitp-test-backup-"))
+    try:
+        shutil.copytree(data, tmp / "data")
+        return tmp
+    except OSError as e:
+        print(f"  ⚠️ 备份 data/ 失败（{e}）—— 本次跑测试可能改动你的设置")
+        shutil.rmtree(tmp, ignore_errors=True)
+        return None
+
+
+def _restore_user_data(tmp: Path | None) -> None:
+    import shutil
+
+    if tmp is None:
+        return
+    src, data = tmp / "data", ROOT / "data"
+    if not src.is_dir():
+        return
+    try:
+        for name in ("state.json",):        # 设置
+            s = src / name
+            if s.exists():
+                shutil.copy2(s, data / name)
+        ss, ds = src / "scripts", data / "scripts"   # 稿件
+        if ss.is_dir():
+            if ds.is_dir():
+                shutil.rmtree(ds)
+            shutil.copytree(ss, ds)
+        print("  （已把你跑测试前的 data/ 放回去：设置和稿件都是原样）")
+    except OSError as e:
+        print(f"  ⚠️ 还原 data/ 失败：{e}")
+        print(f"     手动恢复：把 {tmp / 'data'} 里的内容拷回 {data}")
+        return
+    shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="跑 AITeleprompter 全部测试")
     ap.add_argument("--fast", action="store_true", help="只跑不需要服务和模型的")
@@ -94,6 +145,8 @@ def main(argv=None) -> int:
 
     total_ok = total_bad = 0
     ran, skipped, failed_files = [], [], []
+
+    backup = _backup_user_data() if have_svc else None
 
     for name, need_svc, need_model in STEPS:
         if args.fast and (need_svc or need_model):
@@ -135,6 +188,8 @@ def main(argv=None) -> int:
             print(f"  → 没跑到汇总行，退出码 {r.returncode}，末尾输出：")
             for line in out.strip().splitlines()[-6:]:
                 print("     " + line)
+
+    _restore_user_data(backup)
 
     print("\n" + "-" * 60)
     print(f"合计：{total_ok} 通过 / {total_bad} 失败   （{len(ran)} 个文件）")

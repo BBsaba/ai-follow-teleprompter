@@ -112,17 +112,27 @@ class Session:
         self.aligner.reset(int(self.pos))
 
     # ---------- 识别驱动 ----------
-    def feed_asr(self, text: str) -> dict | None:
+    def feed_asr(self, text: str, now: float | None = None) -> dict | None:
         """吃一段 ASR 文本；有把握就把位置挪过去，并返回要广播的消息。
 
         auto 模式下直接丢弃：用户既然选了自动滚动，就不该被嘴影响。
+
+        `now` 只是给测试注入时间用的；真实运行传 None，由 Aligner 自己取
+        monotonic —— 限速按「秒」算，测试里连续调用没有时间间隔，不注入的话
+        dt≈0，每拍只走 1 字，用例会假红。
         """
         if self.state != "RUNNING" or not text or self.mode != "ai":
             return None
         self._apply_align_limits()
-        res = self.aligner.update(text)
+        res = self.aligner.update(text, now)
+        # lag = 对齐器认为你念到哪（raw）与屏幕上已推进到哪（pos）之差。
+        # 不开限速时它恒为 0；开了以后它就是「还欠你几行没追上」，
+        # 控制台据此显示「追赶中」，用户能亲眼看到它在按设定速度缩小。
+        lag = max(0, self.aligner.raw - self.aligner.pos)
+        per = max(1, int(self.script.per_line))
         self.align_info = {"conf": round(res.conf, 3), "delta": res.delta,
-                           "pos": res.pos, "score": round(res.score, 2)}
+                           "pos": res.pos, "score": round(res.score, 2),
+                           "lag": lag, "lagLines": round(lag / per, 1)}
         if res.conf < self.aligner.min_conf:
             return None
         self.aligned = True

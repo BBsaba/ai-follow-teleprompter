@@ -49,7 +49,8 @@
 
   /* ---------- 控件同步 ---------- */
   /* 0 是「不限」这一档，不是「0 行」—— 后者读不通，也是这个滑块唯一需要额外解释的取值 */
-  const fmtJump = (v) => (Number(v) === 0 ? '不限' : v + ' 行');
+  // 单位是「行/秒」不是「行」：限的是推进速度，不是某一拍能走多远。
+  const fmtJump = (v) => (Number(v) === 0 ? '不限' : v + ' 行/秒');
 
   function syncControls() {
     if (!UI) return;
@@ -429,8 +430,12 @@
     lastConf = conf;
     const d = Number(al.delta || 0);
     const sign = d > 0 ? `+${d}` : String(d);
-    el.textContent = `跟随中 · 置信度 ${conf.toFixed(2)} · ${sign} 字`;
-    el.className = 'asr-align ' + (conf >= 0.70 ? 'ok' : 'warn');
+    // 限速在干活的时候，把「还差多少」明写出来。
+    // 不写的话用户只能看到画面在缓缓滑动，猜不出是限位在起作用还是程序卡了。
+    const lagLines = Number(al.lagLines || 0);
+    const tail = lagLines >= 1 ? ` · 追赶中 还差 ${lagLines.toFixed(0)} 行` : '';
+    el.textContent = `跟随中 · 置信度 ${conf.toFixed(2)} · ${sign} 字${tail}`;
+    el.className = 'asr-align ' + (lagLines >= 1 ? 'busy' : conf >= 0.70 ? 'ok' : 'warn');
     syncAiStatus();
   }
 

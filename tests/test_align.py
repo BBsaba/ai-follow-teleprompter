@@ -206,89 +206,220 @@ LONG = TEXT + (
 
 
 def test_jump_limit():
-    """单次位移不得超过 max_jump_lines 行。
+    """推进速度不得超过 max_jump_lines 行/秒 —— 而且**从第一拍就开始走**。
 
-    ⛔ 这是需求 B 的核心回归。对齐器一拍能在 pos-40 ~ pos+100 字里自由落点，
-    稿子里有重复句子时会锁到远处那个副本；按 14 字/行算一次能蹿 7 行，
-    0.3 秒滑过去 —— 用户看到的就是「大幅上下滚动，偏离正在读的地方」。
+    ⛔ 返工点一：第一版限的是「单拍位移」，实测完全无效。ASR 是 3 Hz 一小段一小段
+       送的，用户读快时跨 5 行是**分 5~6 拍**送到的，每拍都不到阈值，夹子一次都
+       不触发。「一拍（0.33 秒）」用户根本感知不到，能感知的最小单位是「一秒」。
+    ⛔ 返工点二：第二版按秒限速了，但加了「超限先冻 3 拍」的迟滞。用户先看到一秒
+       卡死、再看到画面滑动，体感比不限速还怪。迟滞已经挪到**检测层**
+       （见 Aligner._locate：远处的候选要连中两拍才算数），限速器只管限速。
+
+    ⚠️ 所有用例都必须注入 `now`：测试连续调用没有时间间隔，不注入则 dt≈0，
+    每拍只走 1 字，断言会假红。
     """
-    print("[跳跃限制]")
+    print("[速度限制]")
     s = Script.from_text(LONG, 14)
     per = s.per_line
+    cap = 5 * per                      # 70 字/秒
     check("测试稿够长（≥ 210 字）", len(s.chars) >= 210, len(s.chars))
 
-    limit = 5 * per                        # 5 行 × 14 字
     pos0 = 100
-    # 终点落在搜索窗口内（≤ pos0 + lookahead=100），起点远在 5 行之外 ——
-    # 正好是"不夹就会蹿出去"的那个位置关系。
+    # 终点落在搜索窗口内（≤ pos0 + lookahead=100），起点远在 5 行之外
     lo2, hi2 = pos0 + 78, pos0 + 99
     q = chars_of(s, lo2, hi2)
     want = expect_after(s, hi2)
 
-    # ① 先证明"不限制时确实会蹿很远"。这一步要是失败，说明 DTW 压根没找到远处的位置，
-    #    那下面所有"被夹住了"的断言都是空过 —— 必须让它先叫出来。
+    # ① 先证明「不限制时确实会蹿很远」。这一步要是失败，说明 DTW 压根没找到远处，
+    #    那下面所有「被压住了」的断言都是空过 —— 必须让它先叫出来。
     a = Aligner(s)
     a.max_jump_lines = 0
     a.reset(pos0)
-    r = a.update(q)
-    check(f"不限时确实往前蹿了 {r.delta} 字", r.pos > pos0 + limit, f"pos={r.pos}")
+    r = a.update(q, now=0.0)
+    check(f"不限时确实往前蹿了 {r.delta} 字", r.pos > pos0 + 5 * per, f"pos={r.pos}")
 
-    # ② 5 行上限：同一段输入，一拍只能到 pos0 + limit
+    # ② 限速后首拍**立刻**走，但只走「一拍的额度」—— 不冻结、也不越界
     a.max_jump_lines = 5
     a.reset(pos0)
-    r = a.update(q)
-    check("5 行上限把单拍位移夹住", r.pos == pos0 + limit, f"pos={r.pos} 期望={pos0 + limit}")
-    check("delta 与夹后的位置一致", r.delta == limit, r.delta)
+    r = a.update(q, now=0.0)
+    check("首拍就开始推进（不冻结）", r.delta > 0, f"delta={r.delta}")
+    check(f"首拍位移不超过一拍额度（{int(cap * 0.33) + 1} 字）",
+          r.delta <= int(cap * 0.33) + 1, f"delta={r.delta}")
 
-    # ③ 不是卡死：连续几拍照样能追上去（3 Hz × 5 行 ≈ 210 字/秒，肉眼看是"滑过去"）
-    for _ in range(6):
-        a.update(q)
-    check("连续几拍能自己追到目标", abs(a.pos - want) <= 1, f"pos={a.pos} 期望={want}")
+    # ③ 严格按速度走：一拍一块钱，谁也别想偷偷加速。
+    #    ⚠️ 别拿「首拍」算总量 —— 首拍不知道上一拍在哪，按 3 Hz 估了 0.33 秒额度，
+    #       所以只有第 2 拍起的时间间隔是真实的。
+    steps = []
+    t = 0.0
+    for _ in range(3):
+        t += 0.33
+        steps.append(a.update(q, now=t).delta)
+    check(f"每拍位移都不超过一拍额度（{int(cap * 0.33) + 1} 字）",
+          max(steps) <= int(cap * 0.33) + 1, steps)
+    check(f"最后 1 秒推进 {sum(steps)} 字，不超过上限 {cap}", sum(steps) <= cap + 2, steps)
 
-    # ④ 往回退也夹。注意窗口是 -40/+100 不对称的，回退天然最多 40 字上下，
-    #    用 5 行（70 字）根本够不着，所以这一条得用 1 行（14 字）才夹得住。
+    # ④ 不卡死：剩下的一次性按 70 字/秒走完，再给 3 秒足够
+    for _ in range(9):
+        t += 0.33
+        a.update(q, now=t)
+    check("4 秒内追到目标（不卡死）", abs(a.pos - want) <= 2, f"pos={a.pos} 期望={want}")
+
+    # ⑤ 回退方向也限 —— 用户报的是「上下滚动」，两个方向都得管
     slot = chars_of(s, 0, 20)
     a.max_jump_lines = 1
     a.reset(40)
-    r = a.update(slot)
-    check("1 行上限时夹住回退", r.pos >= 40 - per, f"pos={r.pos}")
+    r = a.update(slot, now=0.0)
+    check("1 行/秒时回退被压住", r.pos >= 40 - per - 1, f"pos={r.pos}")
 
     a.max_jump_lines = 0                   # 同一次输入，不限时应该一步退到底
     a.reset(40)
-    r0 = a.update(slot)
-    check("不限时回退是完整的（不是本来就退不动）", r0.pos == expect_after(s, 20), f"pos={r0.pos}")
+    r0 = a.update(slot, now=0.0)
+    check("不限时回退是完整的（不是本来就退不动）",
+          r0.pos == expect_after(s, 20), f"pos={r0.pos}")
 
-    # ⑤ 0 = 不限，行为与 v2.2.4 完全一致
+    # ⑥ 0 = 不限，行为与 v2.2.4 完全一致
     a.max_jump_lines = 0
     a.reset(pos0)
-    r = a.update(q)
+    r = a.update(q, now=0.0)
     check("0 = 不限（回到 v2.2.4 行为）", r.pos == want, f"pos={r.pos} 期望={want}")
+
+
+def test_jump_detect():
+    """跳过 lookahead 也必须找得到 —— 这才是「第 7 行跟、第 8 行不跟」的病根。
+
+    病根不是限速：单窗搜索的前沿是 raw + lookahead（100 字）。用户一把跳过去，
+    人已经站在窗口外面，DTW 怎么算都匹配不上，屏幕就直接冻住。而那条「第 7 行」
+    的分界线只是 lookahead ÷ 每行字数 算出来的巧合 —— 每行字数一改就跟着挪，
+    所以用户看到的现象才会「一半跟一半不跟」，怎么看都不像限位。
+    """
+    print("[远跳检测]")
+    s = Script.from_text(LONG, 14)
+    per = s.per_line
+    pos0 = 20
+    lo = pos0 + per * 12                   # 12 行 ≈ 168 字，稳稳超出旧窗口
+    hi = min(lo + 16, len(s.chars))
+    q = chars_of(s, lo, hi)
+    want = expect_after(s, hi)
+
+    a = Aligner(s)
+    a.max_jump_lines = 0
+    check("测试点确实在旧窗口之外", lo - pos0 > a.lookahead, lo - pos0)
+
+    a.reset(pos0)
+    r1 = a.update(q, now=0.0)
+    check("远处候选第一拍先不动（等确认）", r1.delta == 0, f"delta={r1.delta}")
+    r2 = a.update(q, now=0.33)
+    check(f"连中两拍后跟上（pos={r2.pos}）", r2.pos == want, f"期望={want}")
+
+    # 开了限速也一样能跟，只是慢 —— 不许冻死
+    a.max_jump_lines = 2                   # 28 字/秒，168 字要 6 秒
+    a.reset(pos0)
+    t = 0.0
+    for _ in range(30):                    # 10 秒
+        t += 0.33
+        a.update(q, now=t)
+    check(f"限速下远跳也能追上（pos={a.pos}）", abs(a.pos - want) <= 3,
+          f"pos={a.pos} 期望={want}")
+
+
+def test_jump_fast_read():
+    """用户读快时必须被限住 —— 这正是 v2.3.0 第一版失效的那个场景。
+
+    实测复现参数：每拍 14 字、3 Hz（约 42 字/秒，正常的快读速度），
+    设「1 行/秒」时前 6 拍必须明显落后于「不限」的轨迹。
+    """
+    print("[速度限制 · 读快]")
+    s = Script.from_text(TEXT * 3, 14)
+
+    def run(jl, n=6, step=14):
+        a = Aligner(s)
+        a.max_jump_lines = jl
+        a.reset(0)
+        t, track = 0.0, []
+        for i in range(n):
+            seg = chars_of(s, i * step, (i + 1) * step)
+            t += 0.33
+            track.append(a.update(seg, now=t).pos)
+        return track
+
+    free = run(0)
+    held = run(1)
+    print(f"       不限轨迹 {free}")
+    print(f"       限速轨迹 {held}")
+
+    check(f"不限时 6 拍跟到 {free[-1]} 字", free[-1] >= 6 * 14 - 2, free)
+    check(f"限 1 行/秒时明显落后（{held[-1]} < {int(free[-1] * 0.8)}）",
+          held[-1] < free[-1] * 0.8, f"held={held}")
+
+
+def test_jump_normal_speed():
+    """正常语速（约 5 字/秒）不能被限速卡住，否则等于用一个毛病换另一个。"""
+    print("[速度限制 · 正常语速]")
+    s = Script.from_text(TEXT * 3, 14)
+    a = Aligner(s)
+    a.max_jump_lines = 1                   # 最严的一档
+    a.reset(0)
+
+    t, fed = 0.0, 0
+    for _ in range(30):                    # 30 拍 = 10 秒，每拍 2 字 ≈ 6 字/秒
+        t += 0.33                          # ⚠️ 每拍至少 2 字：DTW 对 <2 token 直接返回
+        seg = chars_of(s, fed, fed + 2)
+        fed += 2
+        a.update(seg, now=t)
+    check(f"10 秒读 {fed} 字，位置跟上了（pos={a.pos}）", a.pos >= fed - 4,
+          f"pos={a.pos} fed={fed}")
+
+
+def test_jump_no_lost():
+    """极端快读：允许跟丢（用户拨滚轮就行），但**不许崩、不许越界**。
+
+    ⚠️ 这里不再断言「一定跟得上」：设 1 行/秒（20 字/秒）却以 75 字/秒读，
+    物理上就跟不上。新的设计有意接受这个结果 —— 跟丢比乱跳安全，
+    而且用户自己知道刚才跳了。
+    """
+    print("[速度限制 · 极端快读]")
+    s = Script.from_text(TEXT * 12, 14)
+    a = Aligner(s)
+    a.max_jump_lines = 1
+    a.reset(0)
+
+    t, fed = 0.0, 0
+    for _ in range(30):                    # 每拍 25 字 = 75 字/秒
+        t += 0.33
+        seg = chars_of(s, fed, fed + 25)
+        fed += 25
+        a.update(seg, now=t)
+    check("位置始终在稿件范围内", 0 <= a.pos < len(s.chars), a.pos)
+    check(f"落后是有界的（落后 {fed - a.pos} 字，未越界）", 0 <= fed - a.pos < len(s.chars),
+          f"pos={a.pos} fed={fed}")
 
 
 def test_jump_invariant():
     """无论从哪儿开始念、念到哪一段，单拍位移都不越界。
 
-    比单点用例更狠：这里拿「同一段话重复三遍」的稿子扫一遍 —— 那正是用户报的场景，
+    比单点用例更狠：拿「同一段话重复三遍」的稿子扫一遍 —— 那正是用户报的场景，
     重复副本会让 DTW 在多个等代价位置之间摇摆。
     """
-    print("[跳跃限制 · 不变量]")
+    print("[速度限制 · 不变量]")
     s = Script.from_text(TEXT * 3, 14)
     a = Aligner(s)
     a.max_jump_lines = 5
-    limit = 5 * s.per_line
+    per = s.per_line
     worst = 0
     starts = 0
     for start in range(0, max(1, len(s.chars) - 30), 7):
         starts += 1
-        a.reset(start)
         for off in (0, 30, 60, 90, 130):       # 越往后越容易锁到远处的重复副本
+            a.reset(start)                      # 每点重置：额度与候选都归零
             lo = start + off
             hi = min(lo + 18, len(s.chars))
             if hi - lo < 4:
                 continue
-            r = a.update(chars_of(s, lo, hi))
+            r = a.update(chars_of(s, lo, hi), now=0.33)
             worst = max(worst, abs(r.delta))
-    check(f"扫 {starts} 个起点，单拍位移从未超过 {limit} 字", worst <= limit, f"最大 {worst} 字")
+    # 首拍 dt=0.33 → 额度 = 5×14×0.33 ≈ 23 字；断言留到 2 行（28 字）的上限
+    check(f"扫 {starts} 个起点，单拍位移从未超过 2 行（{2 * per} 字）",
+          worst <= 2 * per, f"最大 {worst} 字")
 
 
 def test_jump_limit_session():
@@ -328,6 +459,7 @@ def test_session_follow():
     from app.session import Session
 
     ui = dict(config.DEFAULT_UI)
+    ui["max_jump_lines"] = 0        # 这段测的是「跟随/切换」，不该被限速干扰
     s = Session(ui, TEXT)
     check("默认是自动滚动", s.mode == "auto", s.mode)
 
@@ -393,6 +525,10 @@ def main():
     test_noise()
     test_back_hysteresis()
     test_jump_limit()
+    test_jump_detect()
+    test_jump_fast_read()
+    test_jump_normal_speed()
+    test_jump_no_lost()
     test_jump_invariant()
     test_jump_limit_session()
     test_session_follow()
