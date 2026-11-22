@@ -6,7 +6,7 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import BackgroundTasks, FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTasks, FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -115,6 +115,49 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(config.WEB_DIR)), name="static")
 
+# 前端文件的后缀。改了这些文件就该让浏览器重新问一句 —— 见下面 _no_stale_web。
+_WEB_EXT = (".js", ".css", ".html")
+
+
+@app.middleware("http")
+async def _no_stale_web(request: Request, call_next):
+    """页面与前端资源一律 no-cache。
+
+    ⛔ 为什么必须有（2026-11-21 实测事故）：
+        StaticFiles 只发 ETag / Last-Modified，**没有 Cache-Control**，Edge 就会
+        自己按"启发式"缓存。于是改完代码、后端已是新版，用户那个开着的标签页里
+        还跑着旧的 console.js —— 旧 JS 去读已经退休的 `max_jump_lines`，滑块上
+        直接显示「undefined 行/秒」。
+
+        本地程序没有 CDN、没有带宽成本，让浏览器每次带 ETag 问一句「变了吗」
+        是唯一不会出错的做法。no-cache ≠ 不缓存，它是"缓存可以留，但每次要验证"。
+    """
+    resp = await call_next(request)
+    p = request.url.path
+    # 页面、前端资源、以及 /api 的 GET 都要重新验证：
+    # 界面参数是"存下来就一直在用"的东西，读到一份缓存的旧 JSON 比慢一点糟糕得多。
+    if p.endswith(_WEB_EXT) or p.startswith("/api/") or p in (
+        "/", "/console", "/prompter", "/settings",
+    ):
+        resp.headers["Cache-Control"] = "no-cache, must-revalidate"
+    return resp
+
+
+def _web_stamp() -> str:
+    """web/ 下所有前端文件里最新的修改时间 → 一个短字符串。
+
+    前端启动时记下它，之后每隔几秒问一次：一变就说明界面文件换了，而页面里
+    跑的还是旧的 —— 这时提示用户刷新，而不是让他把「undefined」当成新 bug。
+    """
+    try:
+        t = max(
+            (f.stat().st_mtime for f in config.WEB_DIR.iterdir() if f.suffix in _WEB_EXT),
+            default=0.0,
+        )
+        return str(int(t))
+    except OSError:
+        return "0"
+
 
 # ---------------- 页面 ----------------
 def _app_version() -> str:
@@ -133,7 +176,8 @@ def _app_version() -> str:
 
 @app.get("/api/version")
 async def api_version():
-    return {"version": _app_version()}
+    # web 是前端文件的指纹：控制台拿它判断"我跑的是不是最新那一版界面"
+    return {"version": _app_version(), "web": _web_stamp()}
 
 
 @app.get("/")

@@ -2,6 +2,9 @@
 
 覆盖规划里点名的五类情况：正确 / 漏字 / 多字 / 同音 / 跳句，
 外加两条回归：标点不得让位置偏移、噪音不得乱跳。
+
+v2.4 起「跳句」的语义换成了**跟随范围**：只在当前位置前后各 N 行里找，
+范围外一律不跟（见 test_range_*）。
 """
 import sys
 from pathlib import Path
@@ -75,15 +78,25 @@ def test_dtw_small():
     print("[半全局 DTW]")
     P = char_tokens("今天想跟你聊一个很多家长都问过我的问题")
     q = char_tokens("跟你聊一个很多家长")
-    score, end = semiglobal_dtw(P, q)
+    score, end, skips = semiglobal_dtw(P, q)
     check("干净匹配代价为 0", abs(score) < 1e-9, score)
     check("终点落在 q 最后一个字之后", P[end - 1] == q[-1], (end, P[end - 1] if end else None))
+    check("完整匹配没有跳过任何识别字", skips == 0, skips)
 
     # 从中间开始念：起点自由
     q2 = char_tokens("很多家长都问过")
-    score2, end2 = semiglobal_dtw(P, q2)
+    score2, end2, skips2 = semiglobal_dtw(P, q2)
     check("起点自由（从中间开始也能对齐）", abs(score2) < 1e-9, score2)
     check("终点正确", P[end2 - 1] == q2[-1], end2)
+    check("起点自由不产生跳过", skips2 == 0, skips2)
+
+    # 窗口装不下整句：装不下的部分只能跳过，skips 要数得出来、终点要贴边。
+    # 这两个数正是 _match 判「窗口截断」的依据，缺一个都拦不住跨窗跳读。
+    P3 = char_tokens("今天想跟你聊一个")
+    q3 = char_tokens("今天想跟你聊一个很多家长都问过我的问题")
+    _, end3, skips3 = semiglobal_dtw(P3, q3)
+    check(f"窗口装不下时 skips 报出被跳过的字数（{skips3}）", skips3 >= 8, skips3)
+    check("被挤掉时终点贴在窗口末尾", end3 == len(P3), (end3, len(P3)))
 
 
 def test_exact():
@@ -154,9 +167,6 @@ def test_extra():
 def test_jump():
     print("[跳句]")
     s, a = make()
-    # 这一条验的是「DTW 在窗口内找得到远处那个位置」，不是位移上限 —— 所以关掉上限，
-    # 否则 72 字的跳读会被 5 行（70 字）夹住。上限本身由 test_jump_limit 负责。
-    a.max_jump_lines = 0
     a.reset(0)
     a.update(chars_of(s, 0, 12))
     # 用户直接跳到很后面（但仍在 lookahead 内）
@@ -193,9 +203,9 @@ def test_back_hysteresis():
     check("高置信允许回退修正", r2.pos == expect_after(s, 34), f"pos={r2.pos} 期望={expect_after(s, 34)}")
 
 
-# ---------------------------------------------------------------- 跳跃限制（v2.3.0）
+# ---------------------------------------------------------------- 跟随范围（v2.4）
 # 用 TEXT 打底再接五句互不相同的正文：既够长（>210 字），又不会出现"整篇同一个句子"，
-# 否则 DTW 在每个副本上代价都是 0，测出来的东西和"位移上限"根本没关系。
+# 否则 DTW 在每个副本上代价都是 0，测出来的东西和「范围」根本没关系。
 LONG = TEXT + (
     "为什么会这样？因为他在重复已经会的东西，回避真正不会的东西。"
     "抄错题是体力活，想明白错在哪才是脑力活。"
@@ -205,251 +215,269 @@ LONG = TEXT + (
 )
 
 
-def test_jump_limit():
-    """推进速度不得超过 max_jump_lines 行/秒 —— 而且**从第一拍就开始走**。
-
-    ⛔ 返工点一：第一版限的是「单拍位移」，实测完全无效。ASR 是 3 Hz 一小段一小段
-       送的，用户读快时跨 5 行是**分 5~6 拍**送到的，每拍都不到阈值，夹子一次都
-       不触发。「一拍（0.33 秒）」用户根本感知不到，能感知的最小单位是「一秒」。
-    ⛔ 返工点二：第二版按秒限速了，但加了「超限先冻 3 拍」的迟滞。用户先看到一秒
-       卡死、再看到画面滑动，体感比不限速还怪。迟滞已经挪到**检测层**
-       （见 Aligner._locate：远处的候选要连中两拍才算数），限速器只管限速。
-
-    ⚠️ 所有用例都必须注入 `now`：测试连续调用没有时间间隔，不注入则 dt≈0，
-    每拍只走 1 字，断言会假红。
-    """
-    print("[速度限制]")
+def test_range_inside():
+    """范围以内：立刻跟过去，一拍到位（不再有任何限速）。"""
+    print("[跟随范围 · 范围内]")
     s = Script.from_text(LONG, 14)
     per = s.per_line
-    cap = 5 * per                      # 70 字/秒
-    check("测试稿够长（≥ 210 字）", len(s.chars) >= 210, len(s.chars))
-
-    pos0 = 100
-    # 终点落在搜索窗口内（≤ pos0 + lookahead=100），起点远在 5 行之外
-    lo2, hi2 = pos0 + 78, pos0 + 99
-    q = chars_of(s, lo2, hi2)
-    want = expect_after(s, hi2)
-
-    # ① 先证明「不限制时确实会蹿很远」。这一步要是失败，说明 DTW 压根没找到远处，
-    #    那下面所有「被压住了」的断言都是空过 —— 必须让它先叫出来。
     a = Aligner(s)
-    a.max_jump_lines = 0
-    a.reset(pos0)
-    r = a.update(q, now=0.0)
-    check(f"不限时确实往前蹿了 {r.delta} 字", r.pos > pos0 + 5 * per, f"pos={r.pos}")
-
-    # ② 限速后首拍**立刻**走，但只走「一拍的额度」—— 不冻结、也不越界
-    a.max_jump_lines = 5
-    a.reset(pos0)
-    r = a.update(q, now=0.0)
-    check("首拍就开始推进（不冻结）", r.delta > 0, f"delta={r.delta}")
-    check(f"首拍位移不超过一拍额度（{int(cap * 0.33) + 1} 字）",
-          r.delta <= int(cap * 0.33) + 1, f"delta={r.delta}")
-
-    # ③ 严格按速度走：一拍一块钱，谁也别想偷偷加速。
-    #    ⚠️ 别拿「首拍」算总量 —— 首拍不知道上一拍在哪，按 3 Hz 估了 0.33 秒额度，
-    #       所以只有第 2 拍起的时间间隔是真实的。
-    steps = []
-    t = 0.0
-    for _ in range(3):
-        t += 0.33
-        steps.append(a.update(q, now=t).delta)
-    check(f"每拍位移都不超过一拍额度（{int(cap * 0.33) + 1} 字）",
-          max(steps) <= int(cap * 0.33) + 1, steps)
-    check(f"最后 1 秒推进 {sum(steps)} 字，不超过上限 {cap}", sum(steps) <= cap + 2, steps)
-
-    # ④ 不卡死：剩下的一次性按 70 字/秒走完，再给 3 秒足够
-    for _ in range(9):
-        t += 0.33
-        a.update(q, now=t)
-    check("4 秒内追到目标（不卡死）", abs(a.pos - want) <= 2, f"pos={a.pos} 期望={want}")
-
-    # ⑤ 回退方向也限 —— 用户报的是「上下滚动」，两个方向都得管
-    slot = chars_of(s, 0, 20)
-    a.max_jump_lines = 1
-    a.reset(40)
-    r = a.update(slot, now=0.0)
-    check("1 行/秒时回退被压住", r.pos >= 40 - per - 1, f"pos={r.pos}")
-
-    a.max_jump_lines = 0                   # 同一次输入，不限时应该一步退到底
-    a.reset(40)
-    r0 = a.update(slot, now=0.0)
-    check("不限时回退是完整的（不是本来就退不动）",
-          r0.pos == expect_after(s, 20), f"pos={r0.pos}")
-
-    # ⑥ 0 = 不限，行为与 v2.2.4 完全一致
-    a.max_jump_lines = 0
-    a.reset(pos0)
-    r = a.update(q, now=0.0)
-    check("0 = 不限（回到 v2.2.4 行为）", r.pos == want, f"pos={r.pos} 期望={want}")
+    a.follow_lines = 8
+    a.reset(20)
+    # 跳 4 行 = 56 字，落在 ±8 行（112 字）里
+    lo = 20 + per * 4
+    q = chars_of(s, lo, lo + 16)
+    r = a.update(q)
+    check(f"范围内跳读一拍跟上（pos={r.pos}）", r.pos == expect_after(s, lo + 16),
+          f"pos={r.pos} 期望={expect_after(s, lo + 16)}")
+    check("没有报「超出范围」", r.over == 0, r.over)
 
 
-def test_jump_detect():
-    """跳过 lookahead 也必须找得到 —— 这才是「第 7 行跟、第 8 行不跟」的病根。
-
-    病根不是限速：单窗搜索的前沿是 raw + lookahead（100 字）。用户一把跳过去，
-    人已经站在窗口外面，DTW 怎么算都匹配不上，屏幕就直接冻住。而那条「第 7 行」
-    的分界线只是 lookahead ÷ 每行字数 算出来的巧合 —— 每行字数一改就跟着挪，
-    所以用户看到的现象才会「一半跟一半不跟」，怎么看都不像限位。
-    """
-    print("[远跳检测]")
+def test_range_outside():
+    """范围以外：不跟，位置一动不动 —— 这正是用户要的「跳太远的部分不跟」。"""
+    print("[跟随范围 · 范围外]")
     s = Script.from_text(LONG, 14)
     per = s.per_line
-    pos0 = 20
-    lo = pos0 + per * 12                   # 12 行 ≈ 168 字，稳稳超出旧窗口
-    hi = min(lo + 16, len(s.chars))
-    q = chars_of(s, lo, hi)
-    want = expect_after(s, hi)
-
     a = Aligner(s)
-    a.max_jump_lines = 0
-    check("测试点确实在旧窗口之外", lo - pos0 > a.lookahead, lo - pos0)
+    a.follow_lines = 4                      # ±4 行 = ±56 字
+    a.reset(20)
+    lo = 20 + per * 10                      # 跳 10 行 = 140 字，远超范围
+    q = chars_of(s, lo, lo + 16)
+    before = a.pos
+    r = a.update(q)
+    check("超范围不跟（位置没动）", r.pos == before, f"pos={r.pos} 期望={before}")
+    check(f"报出了「超出范围」且方向朝前（over={r.over}）", r.over > 0, r.over)
+    check("over 大致等于真实差距", abs(r.over - (lo + 16 - before)) <= per,
+          f"over={r.over} 实际差距={lo + 16 - before}")
 
-    a.reset(pos0)
-    r1 = a.update(q, now=0.0)
-    check("远处候选第一拍先不动（等确认）", r1.delta == 0, f"delta={r1.delta}")
-    r2 = a.update(q, now=0.33)
-    check(f"连中两拍后跟上（pos={r2.pos}）", r2.pos == want, f"期望={want}")
-
-    # 开了限速也一样能跟，只是慢 —— 不许冻死
-    a.max_jump_lines = 2                   # 28 字/秒，168 字要 6 秒
-    a.reset(pos0)
-    t = 0.0
-    for _ in range(30):                    # 10 秒
-        t += 0.33
-        a.update(q, now=t)
-    check(f"限速下远跳也能追上（pos={a.pos}）", abs(a.pos - want) <= 3,
-          f"pos={a.pos} 期望={want}")
+    # 同一个人，接着在范围外读 —— 仍然不跟，且不许被拖到窗口边缘
+    for k in range(5):
+        a.update(chars_of(s, lo + k * 5, lo + k * 5 + 16))
+    check("持续在范围外读也不会被拖走", abs(a.pos - before) <= per,
+          f"pos={a.pos} before={before}")
 
 
-def test_jump_fast_read():
-    """用户读快时必须被限住 —— 这正是 v2.3.0 第一版失效的那个场景。
+def test_range_straddle():
+    """识别片段「前半句在范围内、后半句在范围外」：不许被贴到窗口边缘跟过去。
 
-    实测复现参数：每拍 14 字、3 Hz（约 42 字/秒，正常的快读速度），
-    设「1 行/秒」时前 6 拍必须明显落后于「不限」的轨迹。
+    ⛔ 这条是用户实测报上来的（2026-11-21）：范围设 3 行（42 字），屏幕却从开头
+    跳到了第 7 行。根因不是范围算错，而是**窗口截断被当成了成功匹配** ——
+    4 秒滑窗在跳读那一刻同时装着"刚才念的"和"现在念的"，后半句已经在窗外；
+    DTW 把装不下的部分逐字跳过（gap_asr 仅 0.85/字，而且因为窗内有的是同音字，
+    跳过的位置是**散在路径中间**的），代价不高 → 置信度 0.6~0.9 → 看着像成功
+    匹配，落点正好在窗口边缘。下一拍真正的目标就进了窗口，两拍走完一次大跳。
+
+    判据不能只看「跳了几个字」：正常跟读碰上 ASR 噪声也能跳到 5~6 个，和跨窗
+    片段在 6 上撞车。真正的特征是**路径终点顶在窗口最后一格**——人的下一句已经
+    在窗外，DTW 无处可去只能贴边收尾。
     """
-    print("[速度限制 · 读快]")
-    s = Script.from_text(TEXT * 3, 14)
+    print("[跟随范围 · 跨窗片段]")
+    s = Script.from_text(LONG, 14)
+    a = Aligner(s)
+    a.follow_lines = 3
+    r = a.radius()
+    check("范围 3 行 = 半径 42 字（下限没有意外抬高它）", r == 42, r)
 
-    def run(jl, n=6, step=14):
-        a = Aligner(s)
-        a.max_jump_lines = jl
-        a.reset(0)
-        t, track = 0.0, []
-        for i in range(n):
-            seg = chars_of(s, i * step, (i + 1) * step)
-            t += 0.33
-            track.append(a.update(seg, now=t).pos)
-        return track
+    hit = 0
+    total = 0
+    worst = None
+    for start in (10, 20, 35, 50):
+        for tail in (r + 8, r + 20, r + 40, r + 70):
+            a.reset(start)
+            q = chars_of(s, start - 6, start + tail)
+            res = a.update(q)
+            total += 1
+            if res.pos != start:                 # 动了就算错
+                hit += 1
+                if worst is None or abs(res.pos - start) > abs(worst[1] - start):
+                    worst = (start, res.pos, tail, res.conf)
+    check(f"跨窗片段一处都不许跟过去（{total} 种跨度，动了 {hit} 种）", hit == 0,
+          f"最严重：pos {worst[0]}→{worst[1]}（片段到 +{worst[2]}，conf={worst[3]}）"
+          if worst else "")
 
-    free = run(0)
-    held = run(1)
-    print(f"       不限轨迹 {free}")
-    print(f"       限速轨迹 {held}")
+    # 对照：同样从 start 开始，但片段整段落在窗口内 —— 必须跟得上。
+    # 没有这一条，上面那条用「什么都不跟」也能通过。
+    a.reset(20)
+    q = chars_of(s, 20 + 10, 20 + 30)
+    res = a.update(q)
+    check(f"窗口装得下的片段照常跟（pos={res.pos}）", res.pos == expect_after(s, 50),
+          f"pos={res.pos} 期望={expect_after(s, 50)}")
 
-    check(f"不限时 6 拍跟到 {free[-1]} 字", free[-1] >= 6 * 14 - 2, free)
-    check(f"限 1 行/秒时明显落后（{held[-1]} < {int(free[-1] * 0.8)}）",
-          held[-1] < free[-1] * 0.8, f"held={held}")
+
+def test_range_script_end():
+    """稿子念到最后一句时落点本来就该贴到最后一个字，不能被当成「窗口截断」。
+
+    判据里那个 `hi < n` 就是为这个留的：范围窗口撞到稿子末尾时，边界不是范围
+    边界，人真的就在那里。
+    """
+    print("[跟随范围 · 念到稿尾]")
+    s = Script.from_text(LONG, 14)
+    n = len(s.chars)
+    a = Aligner(s)
+    a.follow_lines = 3
+    a.reset(n - 30)
+    q = chars_of(s, n - 22, n)              # 最后 22 个字
+    res = a.update(q)
+    check(f"稿尾 22 字照常跟（pos={res.pos} / 结尾 {n}）", res.pos >= n - 6,
+          f"pos={res.pos} 期望≈{n}")
 
 
-def test_jump_normal_speed():
-    """正常语速（约 5 字/秒）不能被限速卡住，否则等于用一个毛病换另一个。"""
-    print("[速度限制 · 正常语速]")
+def test_range_same_phrase():
+    """同一句话在稿子里出现两次、都在范围内：必须选**近的那个**。
+
+    没有「就近优先」这条先验时，两处 DTW 代价完全相等，选谁取决于插入顺序 ——
+    实测会选到靠前那一份，屏幕"啪"地往回跳一大段。这是用户最初投诉的形态。
+    """
+    print("[跟随范围 · 重复句就近]")
+    line = "这句话在稿子里出现了两次所以必须认近的那一个"
+    filler = "中间这一段是别的内容用来把两份相同的句子隔开不会误配"
+    text = line + "。" + filler + "。" + filler + "。" + line + "。"
+    s = Script.from_text(text, 14)
+    per = s.per_line
+    a = Aligner(s)
+    a.follow_lines = 10
+    # 找第二份的起始字索引
+    raw = "".join(c.ch for c in s.chars)
+    first_i = raw.find(line[:6])
+    second_i = raw.find(line[:6], first_i + 1)
+    check("两处副本都在范围内（不然这条测不到东西）",
+          second_i - first_i <= a.follow_lines * per, second_i - first_i)
+    a.reset(second_i)                       # 人就站在第二份前面
+    r = a.update(line[:15])
+    check(f"选了近的那份（pos={r.pos}）", abs(r.pos - (second_i + 15)) <= 6,
+          f"pos={r.pos} 最近的正确位置={second_i + 15} 远的那份={first_i + 15}")
+
+
+def test_range_normal_read():
+    """正常匀速跟读（每拍几字）绝不能被范围卡住 —— 否则等于用一个大毛病换小毛病。"""
+    print("[跟随范围 · 正常跟读]")
     s = Script.from_text(TEXT * 3, 14)
     a = Aligner(s)
-    a.max_jump_lines = 1                   # 最严的一档
+    a.follow_lines = 3                      # 最紧的一档（控制台最小值就是 3 行）也能正常读
     a.reset(0)
-
-    t, fed = 0.0, 0
-    for _ in range(30):                    # 30 拍 = 10 秒，每拍 2 字 ≈ 6 字/秒
-        t += 0.33                          # ⚠️ 每拍至少 2 字：DTW 对 <2 token 直接返回
-        seg = chars_of(s, fed, fed + 2)
-        fed += 2
-        a.update(seg, now=t)
-    check(f"10 秒读 {fed} 字，位置跟上了（pos={a.pos}）", a.pos >= fed - 4,
+    fed = 0
+    for _ in range(40):                     # 每拍 5 字 ≈ 15 字/秒
+        a.update(chars_of(s, fed, fed + 5))
+        fed += 5
+    check(f"40 拍读 {fed} 字，位置跟上了（pos={a.pos}）", a.pos >= fed - 8,
           f"pos={a.pos} fed={fed}")
 
 
-def test_jump_no_lost():
-    """极端快读：允许跟丢（用户拨滚轮就行），但**不许崩、不许越界**。
-
-    ⚠️ 这里不再断言「一定跟得上」：设 1 行/秒（20 字/秒）却以 75 字/秒读，
-    物理上就跟不上。新的设计有意接受这个结果 —— 跟丢比乱跳安全，
-    而且用户自己知道刚才跳了。
-    """
-    print("[速度限制 · 极端快读]")
-    s = Script.from_text(TEXT * 12, 14)
+def test_range_follows_per_line():
+    """范围按「行」算：改每行字数，搜索半径跟着变。"""
+    print("[跟随范围 · 跟每行字数走]")
+    per = 14
+    s = Script.from_text(LONG, per)
     a = Aligner(s)
-    a.max_jump_lines = 1
-    a.reset(0)
+    a.follow_lines = 6
+    back, ahead = a.window()
+    check(f"每行 {per} 字 → 半径 {ahead} 字", ahead == 6 * per, ahead)
 
-    t, fed = 0.0, 0
-    for _ in range(30):                    # 每拍 25 字 = 75 字/秒
-        t += 0.33
-        seg = chars_of(s, fed, fed + 25)
-        fed += 25
-        a.update(seg, now=t)
-    check("位置始终在稿件范围内", 0 <= a.pos < len(s.chars), a.pos)
-    check(f"落后是有界的（落后 {fed - a.pos} 字，未越界）", 0 <= fed - a.pos < len(s.chars),
-          f"pos={a.pos} fed={fed}")
+    s2 = Script.from_text(LONG, 20)
+    a2 = Aligner(s2)
+    a2.follow_lines = 6
+    _, ahead2 = a2.window()
+    check(f"每行 20 字 → 半径 {ahead2} 字（同行数、更多字）", ahead2 == 6 * 20, ahead2)
 
 
-def test_jump_invariant():
-    """无论从哪儿开始念、念到哪一段，单拍位移都不越界。
+def test_range_min_radius():
+    """半径下限：窗口必须装得下「当前这句话」，否则跟读会整体停摆。
 
-    比单点用例更狠：拿「同一段话重复三遍」的稿子扫一遍 —— 那正是用户报的场景，
-    重复副本会让 DTW 在多个等代价位置之间摇摆。
+    ⛔ 这条是实测补的（2026-11-21）。每行 20 字、范围 1 行 = 半径 20 字时，
+    30 字一段的识别结果塞不进窗口，DTW 只能把尾巴挤在窗口边缘、逐字走
+    gap_asr，置信度崩到 0.3 以下 —— 喂 900 字只跟到 20 字，而且因为
+    「一个字都没动」，界面连「超出范围」都报不出来，用户看到的是「跟读坏了」。
     """
-    print("[速度限制 · 不变量]")
-    s = Script.from_text(TEXT * 3, 14)
+    print("[跟随范围 · 半径下限]")
+    s = Script.from_text(LONG, 20)
     a = Aligner(s)
-    a.max_jump_lines = 5
-    per = s.per_line
-    worst = 0
-    starts = 0
-    for start in range(0, max(1, len(s.chars) - 30), 7):
-        starts += 1
-        for off in (0, 30, 60, 90, 130):       # 越往后越容易锁到远处的重复副本
-            a.reset(start)                      # 每点重置：额度与候选都归零
-            lo = start + off
-            hi = min(lo + 18, len(s.chars))
-            if hi - lo < 4:
-                continue
-            r = a.update(chars_of(s, lo, hi), now=0.33)
-            worst = max(worst, abs(r.delta))
-    # 首拍 dt=0.33 → 额度 = 5×14×0.33 ≈ 23 字；断言留到 2 行（28 字）的上限
-    check(f"扫 {starts} 个起点，单拍位移从未超过 2 行（{2 * per} 字）",
-          worst <= 2 * per, f"最大 {worst} 字")
+    a.follow_lines = 1                      # 1 行 = 20 字，装不下一段话
+    check(f"每行 20 字、范围 1 行 → 半径提到 {a.radius()} 字（不是 20）",
+          a.radius() == 60, a.radius())
+
+    s8 = Script.from_text(LONG, 8)          # 每行只有 8 字：3 行 = 24 字还不够
+    a8 = Aligner(s8)
+    a8.follow_lines = 3
+    check(f"每行 8 字、范围 3 行 → 半径兜到 {a8.radius()} 字", a8.radius() == 40, a8.radius())
+
+    a3 = Aligner(s)
+    a3.follow_lines = 20                    # 大范围不能被下限干扰
+    check(f"范围 20 行仍然是 400 字", a3.radius() == 400, a3.radius())
+
+    # 行为验证：正好走在下限上，30 字一段要能一路跟到底（实测曾在这里停摆）
+    b = Aligner(s)
+    b.follow_lines = 1
+    b.reset(0)
+    n = len(s.chars)
+    fed = 0
+    while fed + 30 <= n:                    # 只喂真实存在的正文，别越过稿尾
+        b.update(chars_of(s, fed, fed + 30))
+        fed += 30
+    check(f"半径下限上 30 字一段也跟得动（跟到 {b.pos}/{fed}）", b.pos >= fed - 60,
+          f"pos={b.pos} fed={fed}")
 
 
-def test_jump_limit_session():
-    """ui 里的「最大跟进」要真的传到对齐器上，包括运行中改值和 rebuild。"""
-    print("[跳跃限制 · 接进会话]")
+def test_range_zero_falls_back():
+    """follow_lines=0（还没接 UI）→ 退回原来的固定窗口，行为不变。"""
+    print("[跟随范围 · 0 = 用固定窗口]")
+    s = Script.from_text(LONG, 14)
+    a = Aligner(s)
+    a.follow_lines = 0
+    back, ahead = a.window()
+    check("退回 lookback/lookahead", (back, ahead) == (a.lookback, a.lookahead),
+          (back, ahead))
+
+
+def test_range_session():
+    """ui 里的「跟随范围」要真的传到对齐器上，包括运行中改值和 rebuild。"""
+    print("[跟随范围 · 接进会话]")
     from app import config
     from app.session import Session
 
     ui = dict(config.DEFAULT_UI)
     ui["follow_mode"] = "ai"
-    ui["max_jump_lines"] = 8
+    ui["follow_lines"] = 12
     s = Session(ui, LONG)
-    check("构造时就同步了最大跟进", s.aligner.max_jump_lines == 8, s.aligner.max_jump_lines)
+    check("构造时就同步了跟随范围", s.aligner.follow_lines == 12, s.aligner.follow_lines)
 
     s.start()
-    ui["max_jump_lines"] = 2                   # 模拟控制台滑块改了 ui
+    ui["follow_lines"] = 3                     # 模拟控制台滑块改了 ui
     s.feed_asr(chars_of(s.script, 0, 20))
-    check("改 ui 后下一拍就生效", s.aligner.max_jump_lines == 2, s.aligner.max_jump_lines)
+    check("改 ui 后下一拍就生效", s.aligner.follow_lines == 3, s.aligner.follow_lines)
 
-    ui["max_jump_lines"] = 0
+    ui["follow_lines"] = 20
     s.rebuild()                                # rebuild 会 new 一个 Aligner，别落回默认值
-    check("rebuild 之后仍跟着 ui", s.aligner.max_jump_lines == 0, s.aligner.max_jump_lines)
+    check("rebuild 之后仍跟着 ui", s.aligner.follow_lines == 20, s.aligner.follow_lines)
 
     # 老 state.json 里没有这个键时，不能 KeyError，要退回 DEFAULT_UI
-    ui2 = {k: v for k, v in config.DEFAULT_UI.items() if k != "max_jump_lines"}
+    ui2 = {k: v for k, v in config.DEFAULT_UI.items() if k != "follow_lines"}
     ui2["follow_mode"] = "ai"
     s2 = Session(ui2, LONG)
     check("ui 缺这个键时退回默认值",
-          s2.aligner.max_jump_lines == config.DEFAULT_UI["max_jump_lines"],
-          s2.aligner.max_jump_lines)
+          s2.aligner.follow_lines == config.DEFAULT_UI["follow_lines"],
+          s2.aligner.follow_lines)
+
+
+def test_range_over_reported():
+    """超范围必须能被控制台看见 —— 静默地不跟，就是前几轮反复被投诉的体验。"""
+    print("[跟随范围 · 报给控制台]")
+    from app import config
+    from app.session import Session
+
+    ui = dict(config.DEFAULT_UI)
+    ui["follow_mode"] = "ai"
+    ui["follow_lines"] = 3
+    s = Session(ui, LONG)
+    s.start()
+    per = s.script.per_line
+    start = 20
+    s.aligner.reset(start)
+    far = start + per * 9
+    msg = s.feed_asr(chars_of(s.script, far, far + 18))
+    info = s.align_info
+    check("这一拍仍然会广播（好让界面更新状态）", msg is not None, msg)
+    check(f"align_info 里有 overLines（{info.get('overLines')}）",
+          float(info.get("overLines") or 0) >= 5, info)
+    check("位置确实没动", int(info["pos"]) == start, info["pos"])
 
 
 def test_session_follow():
@@ -459,7 +487,7 @@ def test_session_follow():
     from app.session import Session
 
     ui = dict(config.DEFAULT_UI)
-    ui["max_jump_lines"] = 0        # 这段测的是「跟随/切换」，不该被限速干扰
+    ui["follow_lines"] = 0          # 退回固定窗口，这段测的是「跟随/切换」，不该被范围限位干扰
     s = Session(ui, TEXT)
     check("默认是自动滚动", s.mode == "auto", s.mode)
 
@@ -524,13 +552,17 @@ def main():
     test_jump()
     test_noise()
     test_back_hysteresis()
-    test_jump_limit()
-    test_jump_detect()
-    test_jump_fast_read()
-    test_jump_normal_speed()
-    test_jump_no_lost()
-    test_jump_invariant()
-    test_jump_limit_session()
+    test_range_inside()
+    test_range_outside()
+    test_range_straddle()
+    test_range_script_end()
+    test_range_same_phrase()
+    test_range_normal_read()
+    test_range_follows_per_line()
+    test_range_min_radius()
+    test_range_zero_falls_back()
+    test_range_session()
+    test_range_over_reported()
     test_session_follow()
     print(f"\n通过 {OK}，失败 {FAIL}")
     return 0 if FAIL == 0 else 1

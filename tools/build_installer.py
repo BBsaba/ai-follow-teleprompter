@@ -20,7 +20,7 @@
     用户机器上不需要装 Python，也不需要管理员权限
   · torch 的 CUDA DLL 有 30 多个、3.6 GB，PyInstaller 靠 hook 猜依赖，
     实测会漏文件，装到别人机器上就是运行时 DLL 找不到
-  · 安装包最终只有 9 MB 左右 —— 依赖在安装时联网装（这是刻意的：
+  · 安装包最终只有 13 MB 左右 —— 依赖在安装时联网装（这是刻意的：
     「安装程序本身要小」），用户选 CUDA 还是 CPU 决定下 2.6 GB 还是 240 MB
 
 构建机要求：
@@ -56,8 +56,14 @@ GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py"
 
 #: 进安装包的项目目录（其余不进：docs/tests/.github/.venv/models/data）
 INCLUDE_DIRS = ("app", "web", "assets")
-#: 进安装包的单文件
-INCLUDE_FILES = ("run.py", "requirements.txt", "LICENSE", "README.md")
+#: 进安装包的单文件。
+#:
+#: ⚠️ **文档一律不进安装包。** 安装包是给「只想装上就用」的人准备的，里面只放
+#: 跑起来必需的东西；README（中英两版）、开发规划、测试，全部只在 GitHub 仓库里，
+#: 想读的人自然会去仓库读。往包里塞文档只会让版本一升级就出现两份互相矛盾的说明。
+#:
+#: LICENSE 是例外，必须留 —— 那是 AGPL 的分发义务，不是文档。
+INCLUDE_FILES = ("run.py", "requirements.txt", "LICENSE")
 
 #: 拷贝时一律跳过
 IGNORE = shutil.ignore_patterns(
@@ -184,7 +190,7 @@ def write_pth(rt: Path) -> None:
 
     各行的作用：
       python313.zip       stdlib 压缩包
-      .                   python\ 目录本身（DLL、_ssl 之类）
+      .                   python\\ 目录本身（DLL、_ssl 之类）
       Lib\\site-packages   pip 装的东西
       ..                  项目根 —— 少了它，`import app` 必失败
       import site         不做这步，site-packages 里的包不会被注册
@@ -247,6 +253,21 @@ def prepare_runtime() -> None:
 # 2. 项目代码
 # --------------------------------------------------------------------------- #
 def copy_project() -> None:
+    # ⚠️ 先把上一轮的产物清干净，只留 python/（--skip-runtime 要复用）。
+    #
+    #    不清的话，「从清单里删掉的文件」根本不会消失：上一版打进包的
+    #    README.md、改过名的模块会继续躺在 payload 里，被 [Files] 的
+    #    `Source: payload\*` 原样扫进去 —— 清单看着减了，包里其实没减。
+    #    这类残留只能靠「清空重来」根治，不能靠逐个删。
+    for p in PAYLOAD.iterdir():
+        if p.name == "python":
+            continue
+        if p.is_dir():
+            shutil.rmtree(p)
+        else:
+            p.unlink()
+    print("  已清空 payload（保留 python/）")
+
     for d in INCLUDE_DIRS:
         src = ROOT / d
         if not src.is_dir():
@@ -403,7 +424,7 @@ def main() -> int:
     global INSTALLER_VERSION
 
     ap = argparse.ArgumentParser(description="构建 AI 提词器 Windows 安装程序")
-    ap.add_argument("-v", "--version", default="2.1.1", help="版本号，默认 2.1.1")
+    ap.add_argument("-v", "--version", default="2.4.0", help="版本号，默认 2.4.0")
     ap.add_argument("--iscc", default=None, help="ISCC.exe 路径")
     ap.add_argument("--clean", action="store_true", help="构建前清空 build/")
     ap.add_argument("--skip-runtime", action="store_true",
@@ -458,7 +479,7 @@ def main() -> int:
     return 0
 
 
-INSTALLER_VERSION = "2.1.1"
+INSTALLER_VERSION = "2.4.0"
 
 if __name__ == "__main__":
     sys.exit(main())

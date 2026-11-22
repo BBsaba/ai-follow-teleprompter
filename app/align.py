@@ -26,23 +26,72 @@
 """
 from __future__ import annotations
 
-import time
+import bisect
 from dataclasses import dataclass
 
 from . import config
 from .script import Script, char_tokens
 
-# 远窗判决门槛（见 Aligner._locate）
-#   JUMP_EASY   —— 近窗匹配到这个置信度以上，就当「人就在附近」，不再搜远处
-#   JUMP_CONF   —— 远窗必须达到这个置信度，才有资格当「跳读候选」
-#   JUMP_MARGIN —— 而且要比近窗好这么多，才算「明显更好」
+# 范围判决用的三个数（见 Aligner.update）
 #
-# 0.60 不是一个拍脑袋的数：正常跟读的匹配几乎都是 0.9~1.0，掉到 0.6 以下一定
-# 是位置对不上（念串行、跳读、或者 ASR 崩了）。0.70 是「候选」的底线，配合
-# 「连中两拍」一起用，把单拍的假匹配挡在外面（探针实测假匹配能到 0.48）。
-JUMP_EASY = 0.60
-JUMP_CONF = 0.70
-JUMP_MARGIN = 0.15
+#   GOOD_CONF  —— 近窗（±跟随范围）到这个置信度，就当「人就在附近」，不再出去侦察。
+#                 正常跟读的匹配几乎都是 0.9~1.0；位置对不上时会掉到 0.5 上下，
+#                 0.62 正好落在这两堆数之间。
+#   SPY_MARGIN —— 外面要「比近窗好这么多」才算「明显更像」，否则宁可不动。
+#   SPY_FACTOR —— 侦察半径 = 跟随范围 × 这个倍数。只用来判断「人是不是在范围外」，
+#                 判断完就丢，**绝不拿它去落点**。
+GOOD_CONF = 0.62
+SPY_MARGIN = 0.10
+SPY_FACTOR = 3
+# 侦察半径的下限（字）。范围调得很小时（比如 2 行），3 倍只有 84 字，
+# 连「撞车」都不一定够得着 —— 那样用户看到的就是「不跟、也不说为什么」。
+# 400 字在 14~20 字/行下是 20~28 行，覆盖现实里的跳读距离。
+SPY_MIN = 400
+
+# 跟随半径的下限。
+#
+# ⛔ 为什么必须有（实测，2026-11-21）：窗口要装得下**当前这句话**。识别结果
+#    一段话是 20~40 字，半径比它小的时候，DTW 只能把这句话的尾巴硬挤在窗口
+#    边缘、逐字走 gap_asr（每个 0.85），置信度直接崩到 0.3 以下。
+#    每行 20 字、范围 1 行（半径 20 字）实测：喂 900 字只跟到 20 字，**彻底停摆**，
+#    而且因为「一个字都没动」，界面连「超出范围」都报不出来 —— 用户看到的就是
+#    「跟读坏了」，不是「范围太小」。
+#
+#    半径 40 字 ≈ 一段 4 秒的话；3 行是为了让用户加一行真的能看到变化
+#    （比 3 行还小时三者取最大，等于没区别）。
+MIN_RADIUS = 40
+MIN_LINES = 3
+
+# 平局先验：稿件里同一句话出现两次时，两处代价完全相等，选谁全看插入顺序。
+# 给「离当前位置远」的候选每个 token 加这么一点代价，让近的那个赢。
+# ⚠️ 必须远小于一次替换代价（0.35），否则它会盖过真实的匹配差异。
+NEAR_BIAS = 0.001
+
+# 窗口截断的判定（见 _match）。两个条件同时成立才算：
+#   ① 路径终点顶在窗口最后一格（`end == len(P)`）
+#   ② 路径上一共跳过了 ≥ CLIP_MIN 个识别字
+#
+# ⛔ 为什么必须有（2026-11-21 实测）：窗口只有 ±N 字，识别结果比窗口长时，
+#    DTW 会把装不下的部分逐字跳过（gap_asr 每个 0.85）。因为稿件窗口里有的是
+#    同音、近音字，那些字并不是整齐地丢在结尾，而是**散在路径中间**被"捡"回去
+#    匹配掉，剩下的才跳过。于是：代价不高、置信度还有 0.6~0.9，看着像一次成功
+#    匹配，落点却在**窗口边缘**，而人其实在窗外几十字的地方。
+#    更要命的是窗口边缘跟着 `pos` 一起走：这一拍贴到边缘，下一拍真正的目标就
+#    落进窗口了。两拍走完一次本该被挡住的大跳，用户看到的还是"跟过去了"。
+#    实测（范围 3 行 = 42 字）：片段跨度一到 +50，位移就被接受成 +42，然后再 +42。
+#
+# ⛔ 为什么不能只数「跳过了几个字」（第一版就是这么写的，失败）：正常跟读碰上
+#    噪声（ASR 多听两三个字）也会跳到 5~6 个，而跨窗片段最小也是 6 —— 两堆数
+#    在 6 上正面撞车，绝对阈值怎么定都有错。（实测 1200 条带噪声的正常跟读：
+#    阈值 3 误挡 29%、阈值 5 误挡 1.4%、阈值 6 仍误挡 0.3%。）
+#
+#    真正干净的特征是**路径终点被顶在窗口最后一格**：人念的下一句已经在窗外，
+#    DTW 无处可去，只能贴边收尾。而正常跟读即使噪声大到跳 6 个字，落点仍在
+#    真实位置、离窗口末尾还有十几格。实测（600 条带噪声正常跟读 + 2352 条跨窗
+#    片段）：`end == len(P) and skips >= 2` 的误挡 0 条、漏网 0 条。
+#
+# CLIP_MIN 取 2 而不是 1：给「人正好站在范围边界上」留 1 个字的余量。
+CLIP_MIN = 2
 
 
 @dataclass
@@ -51,6 +100,7 @@ class AlignResult:
     conf: float       # 0–1，低于 min_conf 时 pos 原样返回
     delta: int        # 相对上一位置移动了多少字
     score: float = 0.0
+    over: int = 0     # 因「超出跟随范围」没跟时，那个位置离当前位置多少字
 
 
 def token_cost(a: tuple[str, str], b: tuple[str, str], near: float = 0.35) -> float:
@@ -74,60 +124,94 @@ def semiglobal_dtw(
     gap_script: float = 0.55,
     gap_asr: float = 0.85,
     near: float = 0.35,
-) -> tuple[float, int]:
-    """返回 (最小代价, 终点在 P 中的下标+1)。
+    anchor: int | None = None,
+    bias: float = 0.0,
+) -> tuple[float, int, int]:
+    """返回 (最小代价, 终点在 P 中的下标+1, 跳过的识别字数)。
 
     P 是稿件窗口的 token，q 是识别结果的 token。
     q 必须整体走完（插入/删除只发生在 P 一侧的自由端与内部空格）。
+
+    `anchor` / `bias` 是平局裁决：稿件里同一句话出现两次时，两处代价完全相等，
+    光看代价分不出该选哪个 —— 于是给「离 anchor 远」的候选加一点点代价
+    （`bias` 每个 token），让**近的那个赢**。bias 必须远小于一次替换代价
+    （0.35），否则它会盖过真实的匹配差异，变成「近的就是对的」。
+    返回的 score 是**不含** bias 的原始代价，置信度不能被它污染。
+
+    ⛔ 第三个返回值（`skips`）是给「窗口截断」用的：最优路径上一共有多少个
+    识别字是**跳过**的（gap_asr），也就是「人念了、但稿子窗口里找不到位置」。
+
+    为什么必须数它：窗口装不下整句话时，DTW 会把装不下的部分逐字跳过 ——
+    代价只有 0.85/字，而且**不是整齐地丢在结尾**，是散在路径中间的。于是
+    代价算出来不高、置信度还有 0.6~0.9，看着像一次成功匹配，落点却在窗口
+    边缘附近，而人其实在窗外几十字的地方。调用方（`_match`）据此拒绝。
     """
     m, n = len(P), len(q)
     if m == 0 or n == 0:
-        return 0.0, 0
+        return 0.0, 0, 0
 
     INF = float("inf")
 
     # j = 0：q 一个都没消费，起点在 P 的任意位置都免费（起点自由）
     prev = [0.0] * (m + 1)
+    prev_skip = [0] * (m + 1)
 
     for j in range(1, n + 1):
         qj = q[j - 1]
         cur = [INF] * (m + 1)
+        cur_skip = [0] * (m + 1)
         for i in range(1, m + 1):
             best = prev[i - 1] + token_cost(P[i - 1], qj, near)   # 匹配/替换
+            skip = prev_skip[i - 1]
             v = prev[i] + gap_asr          # 跳过识别侧一个 token（ASR 多听了一个字）
             if v < best:
-                best = v
+                best, skip = v, prev_skip[i] + 1
             v = cur[i - 1] + gap_script    # 跳过稿件侧一个字（ASR 漏了一个字）
             if v < best:
-                best = v
+                best, skip = v, cur_skip[i - 1]
             cur[i] = best
-        prev = cur
+            cur_skip[i] = skip
+        prev, prev_skip = cur, cur_skip
 
     # 终点自由：最后一列（q 全部消费完）里取代价最小的格子
-    best_score = INF
+    best_val = INF
+    best_score = 0.0
     best_end = 0
+    best_skip = 0
     for i in range(1, m + 1):
-        if prev[i] < best_score:
-            best_score, best_end = prev[i], i
-    return best_score, best_end
+        val = prev[i]
+        if anchor is not None and bias:
+            val += bias * abs(i - anchor)
+        if val < best_val:
+            best_val, best_score, best_end, best_skip = val, prev[i], i, prev_skip[i]
+    return best_score, best_end, best_skip
 
 
 class Aligner:
-    """跟着 ASR 文本推进稿件位置。
+    """跟着 ASR 文本推进稿件位置 —— 只认「附近的稿子」，太远的一律不跟。
 
-    每次 update 都拿「刚听到的这一小段」重新在稿子上找一遍，不累积概率；
-    但保留三个跨拍状态，各有各的用处，别混：
+    整台机器只有一句话：**每次都在「当前位置前后各 N 行」以内找，找到就挪过去，
+    找不到就不动。** 那个 N 就是界面上的「跟随范围」，用户自己调。
 
-    | 状态 | 干什么用 |
-    |---|---|
-    | `raw` | 对齐器认为用户念到哪 —— **下一拍搜索窗口锚它** |
-    | `pos` | 屏幕显示到哪 —— 按 max_jump_lines 追 `raw` |
-    | `_cand` | 远处的候选落点，连中两拍才认（挡单拍假匹配） |
+    为什么是「范围」而不是「速度」（v2.3.x 三次返工的最终结论）：
+        用户要解决的是「某个词和十几行以后的内容撞车，屏幕忽然跳一大段」。
+        这本质上是「该不该去那么远」的问题，不是「去得多快」的问题。
+        按速度限，它照样会去，只是慢——用户看到画面缓缓滑过去，仍然觉得没管住；
+        按范围限，窗外的匹配**根本进不了候选**，一步都不用走。
+        而范围本来就在搜索窗口里，收窄窗口就是收窄范围，不需要任何额外的闸。
+
+    一拍的处理顺序：
+        ① 在 ±N 行里找（近窗）
+        ② 近窗不干净（conf < GOOD_CONF）→ 出去侦察一圈（±3N 行）
+           侦察到「外面明显更像」→ 认定人已经走到范围外了 → **这拍不跟**，
+           而且近窗那个凑出来的假匹配也不许把位置拖走
+        ③ 近窗够干净 → 直接采纳
     """
 
     def __init__(self, script: Script, cfg: dict | None = None):
         c = cfg or config.ALIGN
         self.script = script
+        # 没设跟随范围（0）时的固定窗口，保留给单测与「还没接上 UI」的裸用法
         self.lookback = int(c["lookback"])
         self.lookahead = int(c["lookahead"])
         self.min_conf = float(c["min_conf"])
@@ -137,46 +221,47 @@ class Aligner:
         self.gap_asr = float(c["gap_asr"])
         self.near = float(c["cost_near"])
 
-        # 推进速度上限，单位「行/秒」，0 = 不限。
+        # 跟随范围，单位「行」，0 = 用上面那对固定窗口。
         #
-        # 默认 0（不限）而不是取 DEFAULT_UI 里的 5：Aligner 是底层组件，不该假设
-        # 「UI 一定有这个键、且默认是 5」。真实运行由 Session._apply_align_limits()
-        # 每拍显式写进来；测试里直接 new 出来测对齐精度时，不该被限速干扰
-        # ——（v2.3.0 返工时踩到：默认 5 让整套基础对齐用例全红，因为测试连续调用
-        #   没有时间间隔，dt≈0 → 每拍只走 1 字）
-        self.max_jump_lines = 0
+        # 默认 0 而不是取 DEFAULT_UI 里的数：Aligner 是底层组件，不该假设
+        # 「UI 一定有这个键」。真实运行由 Session._apply_align_limits() 每拍写入。
+        self.follow_lines = 0
 
-        # 限速状态：上一拍的时间戳（None = 还没收到过第一拍）+ 没用完的额度
-        # ⚠️ 用 None 而不是 0.0 当「没初始化」：0.0 是合法时间戳，测试里 now=0.0
-        #    很常见，混用会让第一拍重复发一次额度。
-        self._last_t: float | None = None
-        self._budget = 0.0
-        # 待确认的「远处候选」位置（见 _locate）
-        self._cand = None
-
-        # ★ 两个位置，别搞混（v2.3.0 第三次返工的关键）
-        #   raw —— 对齐器认为「用户真的念到哪了」，不受限速影响
-        #   pos —— 屏幕上显示到哪了，按 max_jump_lines 慢慢往 raw 追
-        # 分开之前只有一个 pos，既是显示位置又是搜索窗口的锚点：
-        # 限速把它夹住 → 窗口跟着往回缩 → 下一拍根本搜不到用户在哪 → 越夹越找不到。
-        # 探针实测：窗口前沿之外 100 字整段失效，还冒出 conf=0.48 的假匹配。
-        self.raw = 0
         self.pos = 0
+        # 上一拍「因为超出范围而没跟」时，那个更像的位置离当前位置多少字（带符号）。
+        # 给控制台显示「超出范围 · 差 N 行」用 —— 不显示的话，用户只会看到
+        # 屏幕忽然不动了，然后开始怀疑是程序坏了。
+        self.over = 0
+
         self.last = AlignResult(0, 0.0, 0)
         self.updates = 0        # 成交次数（调试用）
-        self.rejects = 0        # 被置信度挡掉的次数
+        self.rejects = 0        # 被置信度 / 范围挡掉的次数
 
     # ---------- 生命周期 ----------
     def reset(self, pos: int = 0) -> None:
         self.pos = max(0, int(pos))
-        self.raw = self.pos
-        self._last_t = None
-        self._budget = 0.0
-        self._cand = None
+        self.over = 0
         self.last = AlignResult(self.pos, 0.0, 0)
 
+    # ---------- 范围 ----------
+    def radius(self) -> int:
+        """跟随半径（字）：前后各多少字以内算「附近」。
+
+        三选一取最大 —— 用户设的、至少 3 行、至少 40 字。后两条见文件头
+        MIN_RADIUS / MIN_LINES 的说明：它们不是保守，是**不然跟读会停摆**。
+        """
+        per = int(self.script.per_line) or 1
+        return max(int(self.follow_lines) * per, MIN_LINES * per, MIN_RADIUS)
+
+    def window(self) -> tuple[int, int]:
+        """(往后看多少字, 往前看多少字)。"""
+        if self.follow_lines > 0:
+            r = self.radius()
+            return r, r
+        return self.lookback, self.lookahead
+
     # ---------- 对齐 ----------
-    def update(self, asr_text: str, now: float | None = None) -> AlignResult:
+    def update(self, asr_text: str) -> AlignResult:
         q = char_tokens(asr_text)
         # 一两个字的信息量太小，DTW 会随便找个同音字糊上去
         if len(q) < 2:
@@ -186,46 +271,44 @@ class Aligner:
         if n_chars == 0:
             return self.last
 
-        found = self._locate(q)
-        conf = found[0] if found else 0.0
+        back, ahead = self.window()
+        near = self._match(q, self.pos - back, self.pos + ahead)
+        self.over = 0
 
-        if not found or conf < self.min_conf:
+        # ② 近处不干净，才出去看一眼 —— 平时（正常跟读）压根不走这条
+        if near is None or near[0] < GOOD_CONF:
+            spy = max(ahead * SPY_FACTOR, SPY_MIN)
+            far = self._match(q, self.pos - spy, self.pos + spy)
+            if far and far[0] >= (near[0] if near else 0.0) + SPY_MARGIN:
+                # 范围外有个「明显更像」的地方 → 人已经在范围外了。
+                # 这拍不跟，也不让近处那个凑出来的假匹配把位置拖到窗口边缘。
+                self.over = far[1] - self.pos
+                self.rejects += 1
+                self.last = AlignResult(self.pos, far[0], 0, far[2], self.over)
+                return self.last
+
+        conf = near[0] if near else 0.0
+        if not near or conf < self.min_conf:
             self.rejects += 1
-            self.last = AlignResult(self.pos, conf, 0, found[2] if found else 0.0)
+            self.last = AlignResult(self.pos, conf, 0, near[2] if near else 0.0)
             return self.last
 
-        # found[1] 是「已念完的最后一个 token」的下标+1 → 下一个要念的字
-        new_raw = found[1]
+        new_pos = near[1]
 
         # 跳过紧随其后的标点。不跳的话，用户正好在逗号处停下来时，
         # 前面全灰了这个逗号还是白的——因为「念完」是按字索引算的。
-        while new_raw < n_chars and self.script.chars[new_raw].is_punct:
-            new_raw += 1
-        new_raw = min(new_raw, n_chars - 1)
+        while new_pos < n_chars and self.script.chars[new_pos].is_punct:
+            new_pos += 1
+        new_pos = min(new_pos, n_chars - 1)
 
-        # 回退迟滞：置信度不够高时不许大幅回退，否则念错一个字整行往回弹。
-        # （对着 raw 比，不是 pos —— pos 可能正落在后面追着呢）
-        if new_raw < self.raw - self.back_step_max and conf < self.back_conf:
-            new_raw = self.raw
-
-        self.raw = new_raw
-
-        # 收敛：限制「显示位置推进的速度」，不是「单拍步长」（0 = 不限）。
-        #
-        # 夹在这里而不是 Session.feed_asr() 里，是因为 pos 还要算 delta、写进
-        # AlignResult 给前端用；在外面夹会让「返回的 pos」和「内部记的 pos」脱节。
-        #
-        # 滚轮完全不受影响 —— wheel() 走的是 reset()，人工接管时 raw 和 pos 一起挪过去。
-        if self.max_jump_lines > 0:
-            new_pos = self._rate_limit(new_raw, now)
-        else:
-            new_pos = new_raw
-            self._budget = 0.0        # 不限速时不留额度，免得下次开启时突然冲一下
+        # 迟滞：置信度不够高时不许大幅回退，否则念错一个字整行往回弹
+        if new_pos < self.pos - self.back_step_max and conf < self.back_conf:
+            new_pos = self.pos
 
         delta = new_pos - self.pos
         self.pos = new_pos
         self.updates += 1
-        self.last = AlignResult(new_pos, conf, delta, found[2])
+        self.last = AlignResult(new_pos, conf, delta, near[2])
         return self.last
 
     # ---------- 搜索 ----------
@@ -239,97 +322,22 @@ class Aligner:
         P, idxs = self.script.token_window(lo, hi)
         if not P:
             return None
-        score, end = semiglobal_dtw(P, q, self.gap_script, self.gap_asr, self.near)
+        # 平局时偏向「离当前位置近」的那个副本：稿件里同一句话出现两次时，
+        # 两处代价一模一样，没有这个先验就只能听插入顺序的，可能选到远处那份。
+        anchor = bisect.bisect_left(idxs, self.pos)
+        score, end, skips = semiglobal_dtw(
+            P, q, self.gap_script, self.gap_asr, self.near,
+            anchor=anchor, bias=NEAR_BIAS,
+        )
         if end <= 0:
             return None
+        # 终点顶在窗口最后一格 = 这句话的尾巴已经在窗外，落点只是"窗口边缘"，
+        # 人的真实位置在更远的地方。当作没找到（conf=0），让 update() 去开侦察
+        # 窗、报「超出范围」，而不是先把屏幕贴到边缘、下一拍再走完剩下的距离。
+        #
+        # `hi >= n` 时不算：那不是范围边界，是稿子到头了 —— 人在最后一句上念，
+        # 落点本来就该贴到最后一个字。
+        if end >= len(P) and skips >= CLIP_MIN and hi < n:
+            return 0.0, idxs[end - 1] + 1, score
         conf = max(0.0, min(1.0, 1.0 - score / (len(q) * 1.0)))
         return conf, idxs[end - 1] + 1, score
-
-    def _locate(self, q):
-        """找 q 在稿子上的位置：先近后远，远了还要再确认一拍。
-
-        为什么必须分两级（v2.3.0 实测）：
-            单窗搜索的前沿是 raw + lookahead。用户一把跳过 5 行以上，
-            人就已经站在窗口外面了 —— 怎么算都匹配不上，屏幕直接冻住。
-            用户看到的就是「跳到第 7 行还跟，跳到第 8 行就不跟了」，
-            而第 7/8 行的那条分界线，其实只是 lookahead/每行字数 算出来的巧合。
-        """
-        near = self._match(q, self.raw - self.lookback, self.raw + self.lookahead)
-        if near and near[0] >= JUMP_EASY:
-            # 近处就吻合得很好 —— 正常跟读走这条，和加限速之前一模一样
-            self._cand = None
-            return near
-
-        # 近处对不上，才放开半径去找（多算一次 DTW，只在异常拍才发生）
-        far = self._match(q, self.raw - self.wide_back, self.raw + self.wide_ahead)
-        if far and far[0] >= JUMP_CONF and far[0] >= (near[0] if near else 0.0) + JUMP_MARGIN:
-            # 远处找到「明显更好」的匹配 —— 但先别信，下拍再看是不是还指着那儿。
-            # 单拍的假匹配（同音字凑巧连成一句）很常见，连中两拍才是真跳读。
-            if self._cand is not None and abs(far[1] - self._cand) <= self.script.per_line:
-                self._cand = None
-                return far
-            self._cand = far[1]
-            return None                   # 有强候选，但还没确认 → 这拍原地不动
-        return near
-
-    # 远窗的半径。按「行」算而不是按「字」算 —— 用户设的每行字数会变，
-    # 写死成字就等于「每行字数一变，可跳的行数就跟着变」（那个 7/8 行的分界线
-    # 就是这么来的：100 字 ÷ 20 字/行 = 5 行）。
-    @property
-    def wide_back(self) -> int:
-        return max(self.lookback, int(self.script.per_line) * 12)
-
-    @property
-    def wide_ahead(self) -> int:
-        return max(self.lookahead, int(self.script.per_line) * 20)
-
-    def _rate_limit(self, target: int, now: float | None) -> int:
-        """把显示位置压回「每秒最多 max_jump_lines 行」的速度里。
-
-        为什么按**时间**算、而不是按**拍**算（v2.3.0 第一次返工）：
-            ASR 是 3 Hz 一小段一小段送进来的。用户读快时，跨 5 行（100 字）是
-            **分 5~6 拍**送到的，每拍只有十几字 —— 按拍限幅的话每拍都不到阈值，
-            夹子**一次都不会触发**，用户体感就是「限位完全没效果」。
-            「一拍（0.33 秒）」用户根本感知不到，能感知的最小单位是「一秒」。
-
-        这里只有一件事：按 dt 发额度，用完就停。没有迟滞、没有加速。
-
-        ⛔ 曾经有过 boost = min(1 + starve*0.5, 3.0)，理由是「怕真跳读的人永久落后」。
-           实测代价是毁灭性的：设 2 行/秒（40 字/秒）时实际跑出 120 字/秒，
-           跳 5 行本该走 2.5 秒，实际 1.65 秒 —— 用户体感「唰地跟过去，限位没生效」。
-           **滑块的值必须等于真实速度**，不然「设置」和「体验」永远对不上。
-
-        ⛔ 也曾经有过「单拍超限就先冻 3 拍」的迟滞，想用它分辨误锁。
-           实测两个毛病：① 用户先看到一秒的「卡死」，再看到画面滑动，更不像限位；
-           ② 它把误锁的判定和限速混在一起，参数互相牵制，调一个坏一个。
-           现在误锁在**检测层**就挡掉了（见 _locate 的连中两拍才算数），
-           限速器只管限速，职责单一。
-
-        额度带小数累计（_budget）：dt=0.33、上限 40 字/秒 时每拍 13.2 字，
-        直接 int() 会一律截成 13，实际速度只有 39 字/秒 —— 一点点，但没理由欠着。
-        """
-        t = now if now is not None else time.monotonic()
-        if self._last_t is None:
-            dt = 0.33                     # 首拍按 3 Hz 估，别给一个巨大的初始额度
-        else:
-            dt = max(0.0, min(1.0, t - self._last_t))
-        self._last_t = t
-
-        need = target - self.pos
-        if need == 0:
-            self._budget = 0.0
-            return target
-
-        limit = self.max_jump_lines * int(self.script.per_line)   # 字/秒
-        quota = limit * dt + self._budget
-        if abs(need) <= quota:
-            self._budget = 0.0            # 没被限住，额度清零，不留到下一拍
-            return target
-
-        step = int(quota)
-        if step <= 0:
-            self._budget = quota          # 额度还不够走一个字，先存在这儿
-            return self.pos
-
-        self._budget = quota - step
-        return self.pos + (1 if need > 0 else -1) * step

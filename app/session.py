@@ -51,7 +51,10 @@ class Session:
 
     # ---------- 稿件 ----------
     def _apply_align_limits(self) -> None:
-        """把「最大跟进」从 ui 同步给对齐器。
+        """把「跟随范围」从 ui 同步给对齐器。
+
+        这个数字进的是对齐器的搜索窗口（`Aligner.window()`），所以它改的是
+        「允许跟多远」，不是「允许跟多快」—— 见 align.py 顶部那段说明。
 
         为什么每拍都同步，而不是改设置时同步一次：`self.ui` 就是 `state["ui"]`
         本身，谁都能直接往里写（控制台滑块、设置页、以后的别的接口）。每拍读一次
@@ -61,8 +64,8 @@ class Session:
         `store.load_state()` 虽然会用 `dict(DEFAULT_UI)` 补上，但万一哪天有人绕过
         它直接构造 ui，`ui[键]` 就是一个 KeyError，直接把跟读打挂。
         """
-        self.aligner.max_jump_lines = int(
-            self.ui.get("max_jump_lines", config.DEFAULT_UI["max_jump_lines"])
+        self.aligner.follow_lines = int(
+            self.ui.get("follow_lines", config.DEFAULT_UI["follow_lines"])
         )
 
     def rebuild(self, text: str | None = None) -> None:
@@ -112,27 +115,23 @@ class Session:
         self.aligner.reset(int(self.pos))
 
     # ---------- 识别驱动 ----------
-    def feed_asr(self, text: str, now: float | None = None) -> dict | None:
+    def feed_asr(self, text: str) -> dict | None:
         """吃一段 ASR 文本；有把握就把位置挪过去，并返回要广播的消息。
 
         auto 模式下直接丢弃：用户既然选了自动滚动，就不该被嘴影响。
-
-        `now` 只是给测试注入时间用的；真实运行传 None，由 Aligner 自己取
-        monotonic —— 限速按「秒」算，测试里连续调用没有时间间隔，不注入的话
-        dt≈0，每拍只走 1 字，用例会假红。
         """
         if self.state != "RUNNING" or not text or self.mode != "ai":
             return None
         self._apply_align_limits()
-        res = self.aligner.update(text, now)
-        # lag = 对齐器认为你念到哪（raw）与屏幕上已推进到哪（pos）之差。
-        # 不开限速时它恒为 0；开了以后它就是「还欠你几行没追上」，
-        # 控制台据此显示「追赶中」，用户能亲眼看到它在按设定速度缩小。
-        lag = max(0, self.aligner.raw - self.aligner.pos)
+        res = self.aligner.update(text)
+        # over = 这一拍「因为超出跟随范围而没跟」时，那个更像的位置离屏幕多少字。
+        # 不报出来的话，用户只会看到屏幕忽然不动了，以为程序卡死 ——
+        # 「静默地不跟」正是前几轮反复被投诉的那个体验。
         per = max(1, int(self.script.per_line))
         self.align_info = {"conf": round(res.conf, 3), "delta": res.delta,
                            "pos": res.pos, "score": round(res.score, 2),
-                           "lag": lag, "lagLines": round(lag / per, 1)}
+                           "over": res.over,
+                           "overLines": round(abs(res.over) / per, 1)}
         if res.conf < self.aligner.min_conf:
             return None
         self.aligned = True

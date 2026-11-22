@@ -29,6 +29,23 @@ def load_state() -> dict:
         data = {}
     ui = dict(config.DEFAULT_UI)
     ui.update(data.get("ui") or {})
+    # 退休的键就地从老 state.json 里清掉：留着既没用，又会让下一个读代码的人
+    # 以为它还在生效（v2.3.x 的 max_jump_lines 是「行/秒」速度上限，
+    # v2.4 换成了 follow_lines「行」范围 —— 同名不同义最害人，所以换了新键）。
+    for k in ("max_jump_lines", "max_jump_lines_min", "max_jump_lines_max"):
+        ui.pop(k, None)
+    # 滑块的值必须落在 [min, max] 里，而**边界以代码为准、不认 state 里的旧值**：
+    # min/max 不是用户偏好，是程序能力。v2.4 把「跟随范围」最小档从 1 提到 3
+    # （1 行装不下一句话，跟读会停摆），老 state.json 里的 1 必须被抬上来，
+    # 否则界面会显示一个滑块拨不到、程序也不会照做的数。
+    lo = int(config.DEFAULT_UI["follow_lines_min"])
+    hi = int(config.DEFAULT_UI["follow_lines_max"])
+    try:
+        ui["follow_lines"] = min(max(int(ui.get("follow_lines", lo)), lo), hi)
+    except (TypeError, ValueError):
+        ui["follow_lines"] = config.DEFAULT_UI["follow_lines"]
+    ui["follow_lines_min"] = lo
+    ui["follow_lines_max"] = hi
     asr = dict(config.DEFAULT_ASR)
     asr.update(data.get("asr") or {})
     return {

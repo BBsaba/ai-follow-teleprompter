@@ -39,7 +39,7 @@
 
 ; 版本号由 build_installer.py 用 /DMyAppVersion= 传进来
 #ifndef MyAppVersion
-  #define MyAppVersion "2.1.1"
+  #define MyAppVersion "2.4.0"
 #endif
 
 ; CUDA 版 torch 的索引地址。改这里就是改「装哪个显卡驱动对应的 torch」。

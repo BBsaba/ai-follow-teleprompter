@@ -47,7 +47,7 @@
         <label>每行 <input type="range" id="rPer" step="1"><output id="oPer"></output></label>
         <label>红线 <input type="range" id="rCue" step="1"><output id="oCue"></output></label>
         <label>速度 <input type="range" id="rCps" step="0.1"><output id="oCps"></output></label>
-        <label title="AI 跟随时屏幕每秒最多推进几行。跳读之后按这个速度追上：差 5 行、设 2 行/秒，约 4 秒补齐（你自己还在往下念，所以比 2.5 秒实际、比 5 秒快）。0 = 不限；滚轮拨行不受此限">最大跟进 <input type="range" id="rJump" step="1"><output id="oJump"></output></label>
+        <label title="AI 跟随只在「当前位置前后各 N 行」以内找稿子。超出这个范围的匹配一律不跟 —— 用来挡住「某个词跟十几行以后的内容撞车、屏幕一下跳一大段」。行数按每行字数折算成字数（面板上直接写着：8 行 · 160 字），改「每行」时范围跟着变。最少 3 行 / 40 字：再小窗口就装不下正在念的这句话，跟读会停住。滚轮拨行不受此限">跟随范围 <input type="range" id="rJump" step="1"><output id="oJump"></output></label>
         <div class="row">
           <button id="btnStart" class="primary wide">开始</button>
           <button id="btnMirror">镜像</button>
@@ -86,6 +86,14 @@
       <p class="quit-sub">下次要用：双击桌面上的「AI 提词器」。</p>
       <p id="quitWarn" class="quit-warn" hidden></p>
     </div>
+  </div>
+
+  <!-- 界面文件被换掉时（改代码 / 更新版本），这个标签页里跑的还是旧 JS。
+       旧 JS 读新后端可能读到不认识的键，表现成「undefined」这种鬼东西。
+       与其让用户当 bug 报过来，不如直接说清楚，一键刷新。 -->
+  <div id="staleBar" hidden>
+    <span>界面文件已更新，当前页面还是旧的 —— 刷新一下就好（稿件和设置都已保存）</span>
+    <button id="btnReload">刷新页面</button>
   </div>
 
   <script src="/static/console.js"></script>

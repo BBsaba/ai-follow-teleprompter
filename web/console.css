@@ -217,9 +217,11 @@ aside {
 
 .controls label {
   display: grid;
-  /* 第一列 56px 而不是 42px：要放得下「最大跟进」四个字。
-     窄了它不会换行，而是直接压到滑块上 —— 文字和控件叠在一起比挤一点难看多了。 */
-  grid-template-columns: 56px 1fr 76px;
+  /* 第一列 56px 而不是 42px：要放得下「跟随范围」四个字。
+     窄了它不会换行，而是直接压到滑块上 —— 文字和控件叠在一起比挤一点难看多了。
+     第三列 100px：最长的输出是「50 行 · 1000 字」，76px 会折成两行。
+     滑块因此少了 24px（这一列只在 380px 的侧栏里占 100px），够用。 */
+  grid-template-columns: 56px 1fr 100px;
   align-items: center;
   gap: 10px;
   color: #9AA3AE;
@@ -231,6 +233,9 @@ aside {
   color: #D7DCE3;
   font-variant-numeric: tabular-nums;
   font-size: 12px;
+  /* 不许折行。「跟随范围」那一格是 "8 行 · 160 字"，76px 装不下会断成两行，
+     整行的行高跟着变高，五个滑块的行距就对不齐了。 */
+  white-space: nowrap;
 }
 
 input[type="range"] {
@@ -316,8 +321,6 @@ input[type="range"]::-webkit-slider-thumb {
 }
 .asr-align.ok { color: #62D97C; }
 .asr-align.warn { color: #E5A94D; }
-/* 追赶中：限速在正常干活，不是故障，所以用中性蓝而不是警告黄 */
-.asr-align.busy { color: #6D9EFF; }
 .asr-err {
   font-size: 11px;
   color: #E5484D;
@@ -362,6 +365,36 @@ input[type="range"]::-webkit-slider-thumb {
 }
 .quit-main { margin: 0; color: #B7BEC8; }
 .quit-sub { margin: 14px 0 0; font-size: 13px; color: #6B7280; }
+
+/* 前端文件被换掉后的提示条，压在页面最下面。
+   故意不做自动刷新：用户可能正在编辑器里敲字，刷新会吞掉没保存的那几个字。 */
+#staleBar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 10px 16px;
+  background: #2B1F08;
+  border-top: 1px solid #854F0B;
+  color: #E5A94D;
+  font-size: 13px;
+}
+#staleBar[hidden] { display: none; }
+#staleBar button {
+  padding: 4px 12px;
+  border: 1px solid #854F0B;
+  border-radius: 6px;
+  background: #3A2A0C;
+  color: #FAC775;
+  font-size: 13px;
+  cursor: pointer;
+}
+#staleBar button:hover { background: #4A360F; }
 
 .quit-warn {
   margin: 16px 0 0;

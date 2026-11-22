@@ -22,6 +22,7 @@
   let saveTimer = 0;
   let putTimer = 0;
   let pending = {};
+  let webStamp = null;        // 启动时前端文件的指纹（见 watchWebStamp）
 
   const api = async (path, opts) => {
     const r = await fetch(path, opts);
@@ -48,9 +49,36 @@
   }
 
   /* ---------- 控件同步 ---------- */
-  /* 0 是「不限」这一档，不是「0 行」—— 后者读不通，也是这个滑块唯一需要额外解释的取值 */
-  // 单位是「行/秒」不是「行」：限的是推进速度，不是某一拍能走多远。
-  const fmtJump = (v) => (Number(v) === 0 ? '不限' : v + ' 行/秒');
+  /* 后端读来的数字先过这一道：宁可显示「—」，也不要把 undefined 印在界面上。
+     真出现 undefined，多半是"前端是旧的、后端是新的"（键改名了）——
+     那种情况下 watchWebStamp() 会同时把底部提示条亮起来。 */
+  const numOr = (v, d) => {
+    const n = Number(v);
+    return (v === null || v === undefined || v === '' || !Number.isFinite(n)) ? d : n;
+  };
+
+  /* 这个滑块的单位是「行」，含义是「允许跟随的最远距离」：AI 只在当前位置前后
+     各 N 行以内找稿子，窗外的匹配一律不跟。它不管跟得多快，只管跟得多远。
+     （0 在内部表示「退回固定窗口」，控制台不暴露这一档，最小是 3。） */
+  /* 半径换算必须和 app/align.py 的 Aligner.radius() 一模一样：至少 3 行、
+     至少 40 字。两边不一致的话，面板上的字数就是骗人的 —— 而那条下限存在的
+     全部意义就是「设置要和实际相符」。改这里务必同时改那边。 */
+  const jumpRadius = (v) => {
+    const per = (UI && numOr(UI.per_line, 20)) || 1;
+    const n = numOr(v, 3);
+    return Math.max(n * per, 3 * per, 40);
+  };
+  const fmtJump = (v) => {
+    const n = numOr(v, null);
+    return n === null ? '—' : `${n} 行 · ${jumpRadius(n)} 字`;
+  };
+
+  function syncJumpOut() {
+    const o = $('oJump');
+    if (!o || !UI) return;
+    // 自动滚动下这个数字没有意义，留着会让人以为还在起作用
+    o.textContent = isAiMode() ? fmtJump(UI.follow_lines) : '不用';
+  }
 
   function syncControls() {
     if (!UI) return;
@@ -66,15 +94,16 @@
     $('rCps').min = 1;
     $('rCps').max = 10;
     $('rCps').value = UI.cps;
-    $('rJump').min = UI.max_jump_lines_min;
-    $('rJump').max = UI.max_jump_lines_max;
-    $('rJump').value = UI.max_jump_lines;
+    $('rJump').min = numOr(UI.follow_lines_min, 3);
+    $('rJump').max = numOr(UI.follow_lines_max, 50);
+    const fl = numOr(UI.follow_lines, null);
+    if (fl !== null) $('rJump').value = fl;   // 给 undefined 赋值会写出字面量 "undefined"
 
     $('oFont').textContent = UI.font_px + ' px';
     $('oPer').textContent = UI.per_line + ' 字';
     $('oCue').textContent = Math.round(UI.cue_ratio * 100) + '%';
     $('oCps').textContent = Number(UI.cps).toFixed(1) + ' 字/秒';
-    $('oJump').textContent = fmtJump(UI.max_jump_lines);
+    $('oJump').textContent = fmtJump(UI.follow_lines);
     btnMirror.textContent = UI.mirror ? '镜像 开' : '镜像 关';
     updateClamp();
     syncMode();
@@ -101,14 +130,11 @@
       oCps.textContent = ai ? '不用' : Number(UI.cps).toFixed(1) + ' 字/秒';
     }
 
-    // 「最大跟进」正好反过来：只对 AI 跟随有意义，自动滚动下置灰。
+    // 「跟随范围」正好反过来：只对 AI 跟随有意义，自动滚动下置灰。
     // 两个滑块永远是"一个亮一个灰"，本身就把"当前哪个模式在起作用"说清楚了。
     const rJump = $('rJump');
     if (rJump) rJump.disabled = !ai || runState !== 'IDLE';
-    const oJump = $('oJump');
-    if (oJump && UI) {
-      oJump.textContent = ai ? fmtJump(UI.max_jump_lines) : '不用';
-    }
+    syncJumpOut();
 
     const note = $('modeNote');
     if (note) {
@@ -236,7 +262,10 @@
       const v = Number(e.target.value);
       UI[key] = key === 'cue_ratio' ? v / 100 : v;
       $(out).textContent = fmt(v);
-      if (key === 'per_line') updateClamp();
+      if (key === 'per_line') {
+        updateClamp();
+        syncJumpOut();     // 每行字数一变，同样行数折算出的字数也变，得跟着刷
+      }
       pushPatch({ [key]: UI[key] });
     });
   }
@@ -245,7 +274,7 @@
   bindRange('rPer', 'per_line', 'oPer', (v) => v + ' 字');
   bindRange('rCue', 'cue_ratio', 'oCue', (v) => v + '%');
   bindRange('rCps', 'cps', 'oCps', (v) => Number(v).toFixed(1) + ' 字/秒');
-  bindRange('rJump', 'max_jump_lines', 'oJump', fmtJump);
+  bindRange('rJump', 'follow_lines', 'oJump', fmtJump);
 
   /* ---------- 稿件 ---------- */
   async function loadScriptList() {
@@ -428,14 +457,19 @@
     lastAlignAt = Date.now();
     const conf = Number(al.conf || 0);
     lastConf = conf;
+    // 超出跟随范围被拦下的那一拍：必须说出来。
+    // 不说的话用户只看到屏幕忽然不动，猜不出是「范围挡住了」还是程序卡了。
+    const overLines = Number(al.overLines || 0);
+    if (overLines >= 1) {
+      el.textContent = `超出跟随范围 · 差 ${overLines.toFixed(0)} 行 · 拨滚轮或调大「跟随范围」`;
+      el.className = 'asr-align warn';
+      syncAiStatus();
+      return;
+    }
     const d = Number(al.delta || 0);
     const sign = d > 0 ? `+${d}` : String(d);
-    // 限速在干活的时候，把「还差多少」明写出来。
-    // 不写的话用户只能看到画面在缓缓滑动，猜不出是限位在起作用还是程序卡了。
-    const lagLines = Number(al.lagLines || 0);
-    const tail = lagLines >= 1 ? ` · 追赶中 还差 ${lagLines.toFixed(0)} 行` : '';
-    el.textContent = `跟随中 · 置信度 ${conf.toFixed(2)} · ${sign} 字${tail}`;
-    el.className = 'asr-align ' + (lagLines >= 1 ? 'busy' : conf >= 0.70 ? 'ok' : 'warn');
+    el.textContent = `跟随中 · 置信度 ${conf.toFixed(2)} · ${sign} 字`;
+    el.className = 'asr-align ' + (conf >= 0.70 ? 'ok' : 'warn');
     syncAiStatus();
   }
 
@@ -583,6 +617,31 @@
   }
   window.addEventListener('resize', fitPreview);
 
+  /* ---------- 界面文件换版检测 ----------
+     场景：本地程序改完代码重启服务，而这个标签页里跑的仍是旧的 console.js，
+     后端已经是新的。旧 JS 读到不认识的键 → 界面出现 undefined，用户只会觉得
+     "程序坏了"。所以自己发现它，并给一个明确的刷新入口。
+
+     故意**不自动刷新**：用户可能正在编辑器里敲字，刷新会吞掉没保存的那几个字。 */
+  function watchWebStamp() {
+    if (!webStamp) return;
+    const check = async () => {
+      try {
+        const v = await api('/api/version');
+        if (v && v.web && String(v.web) !== webStamp) {
+          const el = $('staleBar');
+          if (el) el.hidden = false;
+        }
+      } catch (e) { /* 服务正在重启，下一轮再说 */ }
+    };
+    setInterval(check, 5000);
+    // 切回这个标签页时立刻查一次，不用干等 5 秒
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) check(); });
+  }
+
+  const btnReload = $('btnReload');
+  if (btnReload) btnReload.addEventListener('click', () => location.reload());
+
   /* ---------- WebSocket ---------- */
   function connect() {
     ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
@@ -619,7 +678,9 @@
     try {
       const v = await api('/api/version');
       if (v && v.version && v.version !== 'dev') $('verTag').textContent = 'v' + v.version;
+      if (v && v.web) webStamp = String(v.web);
     } catch (e) { /* 拿不到就不显示，不影响用 */ }
+    watchWebStamp();
 
     const d = await api('/api/state');
     UI = d.ui;

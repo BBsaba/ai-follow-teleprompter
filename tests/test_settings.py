@@ -213,8 +213,52 @@ def test_pages():
     check("控制台头部有设置入口", 'id="btnSettings"' in con)
 
 
+def test_state_migration():
+    """老 state.json 的迁移：退休键清掉、滑块值抬进新的 [min, max]。
+
+    ⛔ 背景（v2.4）：`max_jump_lines`（行/秒）换成了 `follow_lines`（行），
+    而且最小档从 1 提到 3 —— 1 行（每行 20 字时半径 20 字）装不下一句识别结果，
+    窗口会把 q 的尾巴挤在边缘、置信度崩掉，**跟读直接停摆**。
+    老文件里那个 2 不能让用户升上来就踩到这个坑。
+    """
+    print("[老 state.json 迁移]")
+    import json
+
+    old = {
+        "ui": {
+            "per_line": 20, "cps": 3.4, "font_px": 62,
+            "max_jump_lines": 2, "max_jump_lines_min": 0, "max_jump_lines_max": 50,
+            "follow_lines": 1, "follow_lines_min": 1, "follow_lines_max": 50,
+        },
+        "asr": {},
+        "last_script_id": "001",
+    }
+    tmp = Path(tempfile.mkdtemp()) / "state.json"
+    tmp.write_text(json.dumps(old), "utf-8")
+    keep = config.STATE_FILE
+    try:
+        config.STATE_FILE = tmp
+        ui = store.load_state()["ui"]
+    finally:
+        config.STATE_FILE = keep
+
+    left = [k for k in ui if k.startswith("max_jump")]
+    check("退休键被清掉", not left, left)
+    check(f"跟随范围抬到新下限（{ui.get('follow_lines')}）",
+          ui.get("follow_lines") == config.DEFAULT_UI["follow_lines_min"],
+          ui.get("follow_lines"))
+    check("边界以代码为准，不认 state 里的旧值",
+          (ui.get("follow_lines_min"), ui.get("follow_lines_max"))
+          == (config.DEFAULT_UI["follow_lines_min"], config.DEFAULT_UI["follow_lines_max"]),
+          (ui.get("follow_lines_min"), ui.get("follow_lines_max")))
+    check("其它设置原样保留",
+          ui.get("per_line") == 20 and ui.get("cps") == 3.4 and ui.get("font_px") == 62,
+          (ui.get("per_line"), ui.get("cps"), ui.get("font_px")))
+
+
 def main():
     test_defaults()
+    test_state_migration()
     test_mic_normalize()
     test_model_normalize()
     test_enum_normalize()
